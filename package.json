@@ -1,0 +1,28 @@
+{
+  "name": "design4-travel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI-native ontwerp- en ontwikkelomgeving voor reisprofessionals",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace apps/app",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "tsc --build",
+    "lint": "eslint . --ext .ts,.tsx --max-warnings=0",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.5",
+    "@typescript-eslint/eslint-plugin": "^7.7.1",
+    "@typescript-eslint/parser": "^7.7.1",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react": "^7.34.1",
+    "eslint-plugin-react-hooks": "^4.6.2",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
+  }
+}

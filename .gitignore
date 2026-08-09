@@ -1,0 +1,28 @@
+node_modules
+dist
+dist-tsc
+build
+coverage
+.DS_Store
+Thumbs.db
+.env
+.env.local
+.env.*.local
+*.log
+*.tsbuildinfo
+.vite
+.turbo
+.cache
+
+# Claude Code — personal per-machine preferences (never share)
+.claude/settings.local.json
+
+# IDE — commit selectively if a team convention exists
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Playwright — if added later
+playwright-report/
+test-results/

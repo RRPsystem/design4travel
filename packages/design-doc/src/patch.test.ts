@@ -1,0 +1,117 @@
+import { describe, expect, it } from 'vitest';
+import { applyPatch, applyPatches, PatchError } from './patch.js';
+import { SCHEMA_VERSION, type DesignDoc } from './schema.js';
+
+function makeDoc(): DesignDoc {
+  return {
+    version: SCHEMA_VERSION,
+    id: 'doc-1',
+    project: { documentType: 'website', title: 'Test' },
+    meta: { createdAt: '2026-08-09T00:00:00.000Z', updatedAt: '2026-08-09T00:00:00.000Z' },
+    outputs: { web: { enabled: true } },
+    pages: [
+      {
+        id: 'page-1',
+        root: {
+          id: 'root',
+          type: 'layout-column',
+          props: {},
+          children: [
+            { id: 'a', type: 'heading', props: { text: 'A', level: 1 } },
+            { id: 'b', type: 'heading', props: { text: 'B', level: 1 } },
+          ],
+        },
+      },
+    ],
+  };
+}
+
+describe('applyPatch', () => {
+  it('setProp updates a node prop', () => {
+    const doc = makeDoc();
+    const next = applyPatch(doc, { kind: 'setProp', nodeId: 'a', key: 'text', value: 'Aa' });
+    expect(next.pages[0]!.root.children![0]!.props.text).toBe('Aa');
+    expect(doc.pages[0]!.root.children![0]!.props.text).toBe('A'); // immutability
+  });
+
+  it('setProps merges', () => {
+    const doc = makeDoc();
+    const next = applyPatch(doc, {
+      kind: 'setProps',
+      nodeId: 'a',
+      props: { level: 2, extra: true },
+    });
+    expect(next.pages[0]!.root.children![0]!.props).toMatchObject({
+      text: 'A',
+      level: 2,
+      extra: true,
+    });
+  });
+
+  it('setBind sets and clears bind slots', () => {
+    const doc = makeDoc();
+    const set = applyPatch(doc, {
+      kind: 'setBind',
+      nodeId: 'a',
+      key: 'text',
+      path: 'accommodation.name',
+    });
+    expect(set.pages[0]!.root.children![0]!.bind).toEqual({ text: 'accommodation.name' });
+    const cleared = applyPatch(set, { kind: 'setBind', nodeId: 'a', key: 'text', path: null });
+    expect(cleared.pages[0]!.root.children![0]!.bind).toEqual({});
+  });
+
+  it('reorderChildren swaps order', () => {
+    const doc = makeDoc();
+    const next = applyPatch(doc, {
+      kind: 'reorderChildren',
+      parentId: 'root',
+      order: ['b', 'a'],
+    });
+    expect(next.pages[0]!.root.children!.map((c) => c.id)).toEqual(['b', 'a']);
+  });
+
+  it('insertNode adds a child at index', () => {
+    const doc = makeDoc();
+    const next = applyPatch(doc, {
+      kind: 'insertNode',
+      parentId: 'root',
+      index: 1,
+      node: { id: 'c', type: 'text', props: { text: 'C' } },
+    });
+    expect(next.pages[0]!.root.children!.map((c) => c.id)).toEqual(['a', 'c', 'b']);
+  });
+
+  it('removeNode removes a node from its parent', () => {
+    const doc = makeDoc();
+    const next = applyPatch(doc, { kind: 'removeNode', nodeId: 'a' });
+    expect(next.pages[0]!.root.children!.map((c) => c.id)).toEqual(['b']);
+  });
+
+  it('setBrandToken sets a token', () => {
+    const doc = makeDoc();
+    const next = applyPatch(doc, {
+      kind: 'setBrandToken',
+      key: 'brand.primary',
+      value: '#0057ff',
+    });
+    expect(next.brandTokens).toEqual({ 'brand.primary': '#0057ff' });
+  });
+
+  it('throws PatchError on unknown nodeId', () => {
+    const doc = makeDoc();
+    expect(() =>
+      applyPatch(doc, { kind: 'setProp', nodeId: 'zzz', key: 'x', value: 1 }),
+    ).toThrow(PatchError);
+  });
+
+  it('applyPatches chains multiple ops', () => {
+    const doc = makeDoc();
+    const next = applyPatches(doc, [
+      { kind: 'setProp', nodeId: 'a', key: 'text', value: '1' },
+      { kind: 'setProp', nodeId: 'b', key: 'text', value: '2' },
+    ]);
+    expect(next.pages[0]!.root.children![0]!.props.text).toBe('1');
+    expect(next.pages[0]!.root.children![1]!.props.text).toBe('2');
+  });
+});

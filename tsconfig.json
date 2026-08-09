@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/design-doc" },
+    { "path": "./packages/typed-nodes" },
+    { "path": "./packages/data-bindings" },
+    { "path": "./packages/renderer" },
+    { "path": "./apps/app" }
+  ]
+}
