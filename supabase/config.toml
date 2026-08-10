@@ -1,0 +1,71 @@
+# design4.travel — lokale Supabase-configuratie voor development.
+# Deze file bevat GEEN geheimen en verwijst nog naar geen enkel remote project.
+# Remote linking (dev + prod) gebeurt pas na expliciet akkoord in blok A2/A3.
+
+project_id = "design4-travel-local"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 15
+
+[db.pooler]
+enabled = false
+
+[studio]
+enabled = true
+port = 54323
+
+[inbucket]
+enabled = true
+port = 54324
+
+[storage]
+enabled = false
+
+[auth]
+enabled = true
+site_url = "http://localhost:5173"
+additional_redirect_urls = ["http://localhost:5173/**"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+enable_signup = true
+enable_anonymous_sign_ins = false
+enable_manual_linking = false
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = false        # magic-link flow gebruikt geen wachtwoordconfirmatie
+secure_password_change = false
+
+# E-mail-provider: magic link is default (link vervalt na 3600s)
+[auth.email.template.magic_link]
+subject = "Log in bij design4.travel"
+
+# Andere OAuth-providers uit — 2A gebruikt e-mail + magic link
+[auth.external.apple]
+enabled = false
+[auth.external.google]
+enabled = false
+[auth.external.github]
+enabled = false
+
+[edge_runtime]
+# Disabled voor Blok A1 — Edge Functions horen bij Blok A3.
+# De Deno-runtime probeerde bij start deno.land imports te fetchen en faalde op
+# een TLS-issue, waardoor supabase start rollback deed. Voor lokale DB + Auth +
+# Studio + pgTAP-tests is de edge-runtime niet nodig.
+enabled = false
+
+# Regio-notitie: Frankfurt is de gekozen productie-regio (`eu-central-1`).
+# Lokale stack draait in Docker; de regio-keuze wordt pas relevant bij
+# `supabase projects create --region eu-central-1` (Blok A2, niet nu).
