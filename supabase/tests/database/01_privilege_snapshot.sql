@@ -3,6 +3,8 @@
 -- expliciet toegekende rechten hebben. Elke drift versus deze snapshot = testfail.
 
 begin;
+set local search_path = extensions, public;
+
 select plan(9);
 
 --------------------------------------------------------------------------------

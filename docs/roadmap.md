@@ -2,7 +2,7 @@
 
 Volgorde is een richting, geen commitment. Wordt bijgesteld op basis van designpartner-feedback.
 
-**Laatste update:** 2026-08-09.
+**Laatste update:** 2026-08-10.
 
 ---
 
@@ -99,3 +99,26 @@ Sandbox voor AI-gegenereerde React/TS-componenten. Vereist eerst technologie-keu
 - Leveranciers-integraties (TC, Qenner, NextPax, Studio4-data) lopen altijd via de server-side laag; ruwe vendor-responses komen nooit in frontend of design-doc.
 - Uitbreidingspunten (interfaces) worden pas als code gerealiseerd zodra de eerste concrete use-case er is — niet vooraf als lege stubs.
 - Elke technische keuze die het productgedrag raakt (prijzing, doelgroep, publish-strategie, PDF-engine, sandbox-tech, persistence-backend) is voorlopig tot een designpartner- of business-signaal het bevestigt.
+
+## Uitbreidbaarheid — architectuuruitgangspunt
+
+Design4Travel is ontworpen om later via losse adapters/renderers te worden uitgebreid met onder andere WordPress-pagina's, Studio4-templates, HTML- en HTML5-banners, en andere toekomstige documenttypes en publicatiedoelen. **Documenttype** (bv. `website`/`offerte`/`banner`), **uitvoerformaat** (bv. `web`/`pdf`/`image`/`html5-embed`) en **publicatiedoel** (bv. WordPress-REST, Studio4-Template-API, ad-server-upload) blijven bewust drie afzonderlijke concepten: één documenttype kan naar meerdere uitvoerformaten renderen, en één uitvoerformaat kan naar meerdere publicatiedoelen gepushed worden. Nieuwe documenttypes komen via een `chk_document_type`-CHECK-uitbreidingsmigration; nieuwe uitvoerformaten via extra `TargetAdapter`-implementaties in `packages/renderer/`; nieuwe publicatiedoelen via `PublishAdapter`-implementaties (nog te bouwen zodra de eerste concrete use-case er is, per het uitbreidingspunt-principe hierboven). Datamodel en RLS-model uit Blok A1 blokkeren deze uitbreidingen niet.
+
+## Internationalisatie & lokalisatie — architectuuruitgangspunt
+
+Design4Travel is bedoeld voor internationaal gebruik. Travel Compositor is wereldwijd; toekomstige koppelingen kunnen o.a. Facilitravel en Nezasa omvatten. Het platform mag niet worden ontworpen rond alleen Nederland of alleen Nederlands. **Documenttype**, **uitvoerformaat**, **publicatiedoel**, **taal** en **markt** blijven vijf afzonderlijke concepten die onafhankelijk combineerbaar zijn (bv. `offerte` → `pdf` → e-mail-attachment → `de-DE` → markt `DE`). Concreet uitgangspunt:
+
+1. **UI-taal per gebruiker.** UI-teksten leven in locale/i18n-bestanden, nooit hardcoded in componenten. Elke gebruiker kiest een eigen interfacetaal; opslag via een additieve `profiles.preferred_locale`-kolom zodra de eerste taal-switcher gebouwd wordt.
+2. **Content-vertalingen per document.** Één project kan meerdere taalversies hebben, elk met eigen versie-tracking en goedkeuringsstatus. Brontekst, machinevertaling en handmatig gecorrigeerde vertaling zijn onderscheidbaar (bv. via een `translation_source`-veld `original`/`machine`/`human`). Dezelfde content moet per taal naar elk uitvoerformaat renderen.
+3. **Markt ≠ taal.** Locale-tags in BCP-47-vorm (`nl-NL`, `nl-BE`, `de-DE`, `en-GB`, `en-US`). Valuta, decimaalscheiding, datum-/tijdformaat, meeteenheden en telefoonformaten volgen de markt, niet de taal. Toekomstige RTL-ondersteuning (`ar`, `he`) meenemen in typografische keuzes.
+4. **Providers via adapters.** Provider-content uit Travel Compositor, Facilitravel, Nezasa en volgende providers wordt server-side genormaliseerd naar het `Studio4Model`; oorspronkelijke taal en providermetadata blijven bewaard in `document_data_snapshots.locale` en `.provenance`. Provider-specifieke taalvelden bepalen nooit rechtstreeks de centrale contentstructuur.
+5. **Publicatie per taal en markt.** WordPress-pagina's, Studio4-templates, banners en andere exports worden per taal/markt-combinatie gerenderd en gepubliceerd; de toekomstige `PublishAdapter` krijgt taal en markt als expliciete parameters, niet impliciet uit de omgeving.
+
+**Impact op Blok A1-datamodel:** één aandachtspunt — `project_documents` heeft `project_id UNIQUE` (1:1 project↔document). Bij implementatie moet gekozen worden tussen (a) vertalingen in een aparte tabel `project_document_translations(project_document_id, locale, doc, …)` waarbij de 1:1-unique blijft en de bron-doc leidend is, of (b) een intra-doc multilingual-structuur binnen `doc jsonb`. Beide zijn additief oplosbaar zonder breaking change aan bestaande tabellen. Verder blokkeert niets uit Blok A1 deze uitbreidingen: `document_data_snapshots.locale` en `.currency` zijn al voorzien, `provenance jsonb` bewaart provider-origineel, en RLS erft trivialiter via `is_active_org_member(organization_id)`.
+
+### Voorkeursrichting (vastgelegd, nu nog niet bouwen)
+
+1. **Meertalige documenten volgen optie A.** `project_documents` blijft het centrale/masterdocument; vertalingen komen later in een afzonderlijke tabel (`project_document_translations` of vergelijkbaar) waarin versiebeheer, status en goedkeuring **per taal/locale** worden bijgehouden. **Sla meertalige teksten niet structureel als `{locale: text}` op in iedere doc-json-node** — die vorm (optie B) verspreidt taal-state door de hele boom en maakt per-taal-versiebeheer/-approval onhanteerbaar. Als een specifieke node uitzonderlijk taal-agnostisch is (bv. een `image src`), dan blijft die één keer in de master; vertalingen betreffen tekstinhoud, niet layout.
+2. **Nu geen implementatie.** Geen translation-tabellen, geen migraties, geen wijzigingen aan bestaande documentstructuren. Dit dient uitsluitend om te voorkomen dat een toekomstige implementatie optie A en B onbewust door elkaar gebruikt.
+3. **Vier concepten afzonderlijk houden:** **language** (bv. `de`), **locale** (bv. `de-DE`, BCP-47), **market** (bv. `DE`, ISO 3166-1 alpha-2), **currency** (bv. `EUR`, ISO 4217). Nooit één veld dat er meerdere impliciet in codeert. Adapters en renderers accepteren deze als aparte parameters.
+4. **`profiles.preferred_locale` krijgt géén hardcoded default `en-US`.** Bij ontbreken erven gebruikers de organisatie- of markt-standaard; `preferred_locale` is uitsluitend een persoonlijke override. De exacte fallback-volgorde (user → org-default → market-default → platform-default) wordt in de i18n-implementatiefase vastgelegd, niet nu.

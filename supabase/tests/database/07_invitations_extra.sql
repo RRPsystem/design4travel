@@ -3,6 +3,8 @@
 -- previous-membership-restore-branch.
 
 begin;
+set local search_path = extensions, public;
+
 select plan(12);
 
 -- Setup: user_owner + user_invitee (nog geen lid) + user_other (uninvolved)

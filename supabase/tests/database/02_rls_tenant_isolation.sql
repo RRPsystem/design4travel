@@ -2,6 +2,8 @@
 -- T1, T2, T15, T16, T17, T25a-e, T30, T60
 
 begin;
+set local search_path = extensions, public;
+
 select plan(10);
 
 -- Setup: twee users in twee orgs.

@@ -4,6 +4,8 @@
 -- pgtap en de tests-helper aanwezig zijn.
 
 begin;
+set local search_path = extensions, public;
+
 select plan(2);
 
 select has_extension('pgtap', 'pgtap is beschikbaar in de test-DB');

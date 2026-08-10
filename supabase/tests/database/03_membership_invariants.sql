@@ -4,6 +4,8 @@
 -- ze staan in supabase/tests/concurrency/*.sh (opt-in).
 
 begin;
+set local search_path = extensions, public;
+
 select plan(6);
 
 -- Setup: user_a owner van org 'inv'; user_b editor

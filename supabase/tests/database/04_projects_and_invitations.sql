@@ -2,6 +2,8 @@
 -- T3, T5, T6, T10 (replaced by T5b), T19, T28, T29, T50, T56, T57 slice
 
 begin;
+set local search_path = extensions, public;
+
 select plan(10);
 
 -- Setup — alle auth.users worden VOORAF aangemaakt (auth.users is niet

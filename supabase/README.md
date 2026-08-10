@@ -90,6 +90,35 @@ cd supabase/scripts/concurrency
 
 Elk script exit 0 bij pass, 1 bij invariant-violation.
 
+## Remote pgTAP-tests — bewust géén A2-acceptatie-eis
+
+**Positie:** de pgTAP-suite is **verplicht op de lokale stack** (79 tests, 0 failures), maar wordt **bewust NIET als A2-acceptatie-eis gebruikt** tegen het remote developmentproject. Remote-verificatie loopt via read-only schema-, migration- en privilegecontroles (zie hieronder). Die combinatie is voor A2 als voldoende geaccepteerd; ze is nadrukkelijk *niet* aangeboden als equivalent aan een remote functionele test-run.
+
+### Waarom geen remote pgTAP als acceptatie-eis
+
+De pgTAP-suite hangt op twee omgevingsafhankelijkheden die op remote NIET automatisch beschikbaar zijn:
+
+1. **De `pgtap`-extensie zelf.** Wordt lokaal door de Supabase-CLI-stack meegeleverd; op remote (dev én prod) is 'ie standaard afwezig. Als 'ie aan zou moeten: eenmalig per dev-project via `supabase db query --linked "create extension if not exists pgtap with schema extensions;"` — nooit als applicatiemigration (zou het naar productie meeslepen). pgTAP-functies zijn read-only assertions (`plan()`, `ok()`, `is()`, `throws_ok()`, `lives_ok()`, …) die geen writes doen op applicatie-tabellen; de standaard `PUBLIC EXECUTE` op `extensions.*` (net als `pgcrypto`, `citext`, `uuid-ossp`, `pg_stat_statements`) vergroot de aanvalsoppervlakte op RLS-beschermde app-tabellen niet.
+2. **Het `tests`-schema uit `supabase/seed.sql`** met de helpers `tests._email_for(uuid)`, `tests.sign_in_as(uuid)` en `tests.sign_out()`. `seed.sql` wordt alleen door `supabase db reset` (lokaal) geladen — nooit door `supabase db push`. Deze helpers **mogen niet permanent op remote worden geïnstalleerd** vanwege een concreet risico op de development-DB:
+   - **`tests._email_for(uuid)`** is `SECURITY DEFINER`, leest `auth.users` als owner (postgres), en heeft `EXECUTE`-grant voor `authenticated`. Als deze helper op remote zou staan, kan een authenticated JWT via een RPC-call e-mailadressen van willekeurige andere gebruikers oplezen. Dat is een concrete privacy-lek.
+   - **`tests.sign_in_as(uuid)`** hoort nooit permanent op remote. In een lokale pgTAP-transactie doet de helper `set_config(..., true)` op `request.jwt.claims` en `role` — transactioneel gemarkeerd en verdwenen zodra de transactie sluit. Buiten die transactionele context is dit niet zonder aanvullend onderzoek te bewijzen; we vermijden de blootstelling daarom door de helper simpelweg niet op remote te zetten.
+
+Optie A (dev-only bootstrap) zou beide helpers permanent op remote-dev zetten en dat privacy-risico incasseren. Optie B (self-contained testbestanden) is in theorie mogelijk maar niet-triviaal: PostgreSQL kent geen `CREATE TEMPORARY SCHEMA`, en een regulier schema binnen een transactie kan door parallelle test-runs naamconflicten opleveren; een veilige variant vereist een apart ontwerp (bv. functies in `pg_temp` met aangepaste aanroepen of gegarandeerd sequentiële uitvoering). Buiten scope A2.
+
+### Wat de A2-acceptatie WEL is (verplicht)
+
+- **Lokale pgTAP-suite:** `supabase test db` — moet **10 files, 79 tests, 0 failures, PASS** opleveren.
+- **Remote migration history:** `supabase migration list --linked` — moet **0001 t/m 0009 lokaal ⇄ remote** matchen.
+- **Remote schema-objecten:** 9 tabellen, 22 functies, 8 triggers, 11 policies in `public` — via `supabase db dump --linked --schema public` of `db query --linked` op `information_schema` / `pg_catalog`.
+- **Remote privileges:** `authenticated` = 18 EXECUTE-grants op `public.*` (13 RPCs + 5 helpers); `anon` = 0; `PUBLIC` = 0; `save_document_internal` uitsluitend `service_role` (+ postgres als owner).
+- **Remote data-nulmeting:** alle 9 public-tabellen + `auth.users` = 0 rijen, delta = 0 over de A2-transitie.
+
+### Backlog
+
+- **Onverklaard**: `supabase test db --linked` faalt op remote met `ERROR: function plan(integer) does not exist` op de eerste `plan()`-aanroep in elk test-bestand, ondanks dat `pgtap` in `extensions` staat, `extensions.plan(integer)` bestaat, en de `postgres`-rol een default `search_path` heeft die `extensions` bevat. Een simulatie van dezelfde SQL via `supabase db query --linked` (dezelfde pooler-endpoint) laat zien dat `plan()` in die context wél correct resolveert. De root-cause is niet vastgesteld zonder een gerichte remote diagnostic test-run. Als remote pgTAP later alsnog gewenst wordt, hoort dit onderzoek en de eventuele fix aan die vervolgstap. Geen impact op A2-afsluiting.
+
+**Currently enabled on remote-dev:** `pgtap 1.3.3` in schema `extensions` op project `ltzzxjrnhfcilfplpoep` (Frankfurt). Wordt nu niet verwijderd (idempotent, geen kwaad). Niet op productie (bestaat nog niet). Voor productie: standaard **niet** installeren.
+
 ## Rollback / herstel
 
 - **Lokaal:** `supabase db reset` gooit de DB weg en herbouwt from scratch. Effectief een volledige rollback.

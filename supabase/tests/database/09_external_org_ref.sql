@@ -3,6 +3,8 @@
 -- werkt; buiten-org faalt; soft-deleted org faalt; admin/editor faalt.
 
 begin;
+set local search_path = extensions, public;
+
 select plan(7);
 
 insert into auth.users (id, instance_id, email, encrypted_password,

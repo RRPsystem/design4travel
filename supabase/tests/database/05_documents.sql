@@ -2,6 +2,8 @@
 -- C16, C17, C18 (slice), C19 (slice), C23, C24, C27, C29, C31, T22, T24, T44
 
 begin;
+set local search_path = extensions, public;
+
 select plan(8);
 
 insert into auth.users (id, instance_id, email, encrypted_password,

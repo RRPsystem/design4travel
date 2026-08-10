@@ -3,6 +3,8 @@
 -- andere actieve leden in gedeelde actieve organisaties. Verder niets.
 
 begin;
+set local search_path = extensions, public;
+
 select plan(6);
 
 -- Setup: 4 users, 2 orgs

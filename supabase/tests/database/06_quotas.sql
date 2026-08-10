@@ -4,6 +4,8 @@
 -- Q3: invite-rate is per organisatie (30/uur), niet per user
 
 begin;
+set local search_path = extensions, public;
+
 select plan(9);
 
 -- Setup: één user
