@@ -69,3 +69,13 @@ enabled = false
 # Regio-notitie: Frankfurt is de gekozen productie-regio (`eu-central-1`).
 # Lokale stack draait in Docker; de regio-keuze wordt pas relevant bij
 # `supabase projects create --region eu-central-1` (Blok A2, niet nu).
+
+# A3.2 — rollback-document Edge Function.
+# verify_jwt is default true; hier expliciet gezet om per ongeluk
+# uitschakelen (of --no-verify-jwt in scripts) te blokkeren. Bij deploy
+# controleert het Supabase-platform daarmee JWT-signature + expiratie
+# vóór de function draait; onze handler doet daarna nog
+# supabase.auth.getUser() om anon/service_role/gebruikersloze tokens te
+# weigeren (zie functions/rollback-document/README.md).
+[functions.rollback-document]
+verify_jwt = true
