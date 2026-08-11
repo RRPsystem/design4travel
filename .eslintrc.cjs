@@ -30,6 +30,9 @@ module.exports = {
     '*.config.cjs',
     'vite.config.ts',
     'vitest.config.ts',
+    // Deno-side edge functions have their own toolchain (deno check +
+    // deno test); no Node/ESLint here.
+    'supabase/functions',
   ],
   rules: {
     // Fase 1 pragmatics — kept intentionally light.

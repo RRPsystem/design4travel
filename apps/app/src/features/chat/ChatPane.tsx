@@ -2,7 +2,11 @@ import { useDesignDocStore } from '../../state/designDocStore.js';
 import { MessageList } from './MessageList.js';
 import { PromptInput } from './PromptInput.js';
 
-export function ChatPane() {
+interface Props {
+  onOpenVersionHistory(): void;
+}
+
+export function ChatPane({ onOpenVersionHistory }: Props) {
   const undo = useDesignDocStore((s) => s.undo);
   const redo = useDesignDocStore((s) => s.redo);
   const stack = useDesignDocStore((s) => s.stack);
@@ -31,6 +35,14 @@ export function ChatPane() {
         <div style={{ fontWeight: 700, fontSize: 14 }}>design4.travel</div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{ fontSize: 11, color: saveStateColor(saveState) }}>{saveStateLabel(saveState)}</span>
+          <button
+            type="button"
+            onClick={onOpenVersionHistory}
+            title="Versiegeschiedenis"
+            style={btn(true)}
+          >
+            Versies
+          </button>
           <button
             type="button"
             onClick={() => undo()}
