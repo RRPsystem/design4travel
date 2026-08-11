@@ -26,3 +26,7 @@ Thumbs.db
 # Playwright — if added later
 playwright-report/
 test-results/
+
+# Supabase CLI local state — never commit
+supabase/.branches/
+supabase/.temp/
