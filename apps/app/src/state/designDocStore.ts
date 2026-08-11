@@ -9,6 +9,10 @@ import {
   type DesignDoc,
   type PatchOp,
   type UndoStack,
+  type VersionHistoryAdapter,
+  type VersionSnapshot,
+  type VersionSummary,
+  type RollbackResult,
 } from '@design4/design-doc';
 import type { PersistenceAdapter } from '@design4/design-doc';
 import type { SampleDataVariant } from '@design4/data-bindings';
@@ -20,6 +24,16 @@ type State = {
   variant: SampleDataVariant;
   saveState: 'idle' | 'saving' | 'saved' | 'error';
   lastError?: string;
+  /** Huidige backend lock_version — bumpt bij elke save/rollback. */
+  currentLockVersion: number;
+  /**
+   * Wanneer gezet: preview toont deze oudere versie, de editor blijft
+   * ongewijzigd. Herstel naar de echte editor via `stopPreviewingVersion()`
+   * of via een succesvolle `restoreVersion()`.
+   */
+  previewingVersion: VersionSnapshot | null;
+  /** Wordt tijdens een lopende rollback op `true` gezet zodat de UI kan blokkeren. */
+  isRestoring: boolean;
 };
 
 type Actions = {
@@ -29,13 +43,34 @@ type Actions = {
   undo(): boolean;
   redo(): boolean;
   reset(seed: DesignDoc): void;
+  previewVersion(v: VersionSnapshot): void;
+  stopPreviewingVersion(): void;
+  restoreVersion(v: VersionSnapshot): Promise<RollbackResult>;
 };
 
 let persistence: PersistenceAdapter | null = null;
+let versionsAdapter: VersionHistoryAdapter | null = null;
+let versionSink: ((doc: DesignDoc) => VersionSummary) | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function attachPersistence(adapter: PersistenceAdapter) {
   persistence = adapter;
+}
+
+export function attachVersions(adapter: VersionHistoryAdapter) {
+  versionsAdapter = adapter;
+}
+
+/**
+ * Registreert een callback die na iedere debounced save wordt aangeroepen om
+ * een nieuwe versie vast te leggen. Retourneert de nieuwe VersionSummary
+ * zodat `currentLockVersion` automatisch bijgewerkt kan worden.
+ *
+ * In productie wordt de versie door de save-RPC zelf gemaakt — dan is deze
+ * sink niet nodig. De mock-adapter simuleert dat gedrag.
+ */
+export function attachVersionSink(sink: (doc: DesignDoc) => VersionSummary) {
+  versionSink = sink;
 }
 
 function scheduleSave(doc: DesignDoc, setState: (s: Partial<State>) => void) {
@@ -45,7 +80,12 @@ function scheduleSave(doc: DesignDoc, setState: (s: Partial<State>) => void) {
   saveTimer = setTimeout(async () => {
     try {
       await persistence!.save(doc.id, doc);
-      setState({ saveState: 'saved' });
+      if (versionSink) {
+        const summary = versionSink(doc);
+        setState({ saveState: 'saved', currentLockVersion: summary.version_number });
+      } else {
+        setState({ saveState: 'saved' });
+      }
     } catch (e) {
       setState({ saveState: 'error', lastError: String(e) });
     }
@@ -57,6 +97,9 @@ export const useDesignDocStore = create<State & Actions>((set, get) => ({
   stack: emptyStack(),
   variant: 'luxury',
   saveState: 'idle',
+  currentLockVersion: 0,
+  previewingVersion: null,
+  isRestoring: false,
 
   applyOps(ops) {
     const state = get();
@@ -81,6 +124,8 @@ export const useDesignDocStore = create<State & Actions>((set, get) => ({
       stack: pushSnapshot(state.stack, state.doc),
       saveState: 'idle',
       lastError: undefined,
+      // Actieve mutaties beëindigen automatisch een preview-modus.
+      previewingVersion: null,
     });
     scheduleSave(parsed.data as DesignDoc, (s) => set(s));
   },
@@ -97,7 +142,7 @@ export const useDesignDocStore = create<State & Actions>((set, get) => ({
     const state = get();
     const res = undoStack(state.stack, state.doc);
     if (!res) return false;
-    set({ doc: res.doc, stack: res.stack });
+    set({ doc: res.doc, stack: res.stack, previewingVersion: null });
     scheduleSave(res.doc, (s) => set(s));
     return true;
   },
@@ -106,12 +151,77 @@ export const useDesignDocStore = create<State & Actions>((set, get) => ({
     const state = get();
     const res = redoStack(state.stack, state.doc);
     if (!res) return false;
-    set({ doc: res.doc, stack: res.stack });
+    set({ doc: res.doc, stack: res.stack, previewingVersion: null });
     scheduleSave(res.doc, (s) => set(s));
     return true;
   },
 
   reset(seed) {
-    set({ doc: seed, stack: emptyStack(), saveState: 'idle', lastError: undefined });
+    set({
+      doc: seed,
+      stack: emptyStack(),
+      saveState: 'idle',
+      lastError: undefined,
+      currentLockVersion: 0,
+      previewingVersion: null,
+      isRestoring: false,
+    });
+  },
+
+  previewVersion(v) {
+    set({ previewingVersion: v });
+  },
+
+  stopPreviewingVersion() {
+    set({ previewingVersion: null });
+  },
+
+  async restoreVersion(target) {
+    if (!versionsAdapter) {
+      return { ok: false, error: 'internal_error' };
+    }
+    const state = get();
+    if (!state.doc?.id) {
+      return { ok: false, error: 'internal_error' };
+    }
+    // Blokkeer double-submits + geef UI feedback.
+    set({ isRestoring: true, lastError: undefined });
+    let result: RollbackResult;
+    try {
+      result = await versionsAdapter.rollback(
+        state.doc.id,
+        target.version_number,
+        state.currentLockVersion,
+      );
+    } catch {
+      set({ isRestoring: false });
+      return { ok: false, error: 'internal_error' };
+    }
+    if (!result.ok) {
+      set({ isRestoring: false });
+      return result;
+    }
+    // Success — vervang doc met teruggezette inhoud, bump lock_version,
+    // sluit preview-modus. De HUIDIGE state is aan de backend-zijde in een
+    // nieuwe versie bewaard door de rollback zelf (invariant migration 0010),
+    // dus rollback zelf is later ook weer ongedaan te maken door naar die
+    // voorgaande versie te herstellen.
+    set({
+      doc: target.doc,
+      stack: pushSnapshot(state.stack, state.doc),
+      currentLockVersion: result.new_lock_version,
+      previewingVersion: null,
+      saveState: 'saved',
+      lastError: undefined,
+      isRestoring: false,
+    });
+    // Spiegel naar de lokale persistentie — géén nieuwe version-record hiervoor;
+    // dat heeft de adapter.rollback zelf al gedaan (of doet de save-RPC in productie).
+    if (persistence) {
+      persistence.save(target.doc.id, target.doc).catch(() => {
+        /* mirror-only; niet fatal */
+      });
+    }
+    return result;
   },
 }));

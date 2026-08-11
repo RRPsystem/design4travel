@@ -4,8 +4,14 @@ import { listenForPreview, sendToPreview } from './previewProtocol.js';
 
 const VARIANTS = ['luxury', 'budget', 'missing-image'] as const;
 
-export function PreviewPane() {
+interface Props {
+  onRequestRestorePreviewed(): void;
+}
+
+export function PreviewPane({ onRequestRestorePreviewed }: Props) {
   const doc = useDesignDocStore((s) => s.doc);
+  const previewingVersion = useDesignDocStore((s) => s.previewingVersion);
+  const stopPreviewingVersion = useDesignDocStore((s) => s.stopPreviewingVersion);
   const variant = useDesignDocStore((s) => s.variant);
   const selectedNodeId = useDesignDocStore((s) => s.selectedNodeId);
   const select = useDesignDocStore((s) => s.select);
@@ -14,6 +20,10 @@ export function PreviewPane() {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [ready, setReady] = useState(false);
   const [viewport, setViewport] = useState<'desktop' | 'mobile'>('desktop');
+
+  // Welk document toont de preview? Actuele doc, tenzij de gebruiker een
+  // oudere versie bekijkt.
+  const previewDoc = previewingVersion?.doc ?? doc;
 
   // Listen for preview→host messages
   useEffect(() => {
@@ -27,12 +37,40 @@ export function PreviewPane() {
   useEffect(() => {
     if (!ready) return;
     const win = iframeRef.current?.contentWindow;
-    if (!win || !doc?.id) return;
-    sendToPreview(win, { kind: 'load-doc', doc, variant, selectedNodeId });
-  }, [ready, doc, variant, selectedNodeId]);
+    if (!win || !previewDoc?.id) return;
+    sendToPreview(win, { kind: 'load-doc', doc: previewDoc, variant, selectedNodeId });
+  }, [ready, previewDoc, variant, selectedNodeId]);
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#f9fafb' }}>
+      {previewingVersion ? (
+        <div
+          style={{
+            padding: '8px 12px',
+            background: '#eff6ff',
+            borderBottom: '1px solid #bfdbfe',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            fontSize: 12,
+            color: '#1e3a8a',
+          }}
+          role="status"
+        >
+          <span>
+            Je bekijkt <strong>versie {previewingVersion.version_number}</strong>. De editor
+            is ongewijzigd.
+          </span>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+            <button type="button" onClick={stopPreviewingVersion} style={ghostBtn}>
+              Terug naar actueel
+            </button>
+            <button type="button" onClick={onRequestRestorePreviewed} style={primaryBtn}>
+              Deze versie herstellen
+            </button>
+          </div>
+        </div>
+      ) : null}
       <div
         style={{
           padding: '8px 12px',
@@ -110,3 +148,22 @@ function pillBtn(active: boolean) {
     cursor: 'pointer',
   } as const;
 }
+
+const primaryBtn: React.CSSProperties = {
+  background: '#4f46e5',
+  color: '#fff',
+  border: '1px solid #4f46e5',
+  borderRadius: 4,
+  padding: '3px 10px',
+  fontSize: 11,
+  cursor: 'pointer',
+};
+const ghostBtn: React.CSSProperties = {
+  background: 'transparent',
+  color: '#1e40af',
+  border: '1px solid #bfdbfe',
+  borderRadius: 4,
+  padding: '3px 10px',
+  fontSize: 11,
+  cursor: 'pointer',
+};
