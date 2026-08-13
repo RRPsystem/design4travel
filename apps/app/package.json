@@ -14,6 +14,7 @@
     "@design4/design-doc": "*",
     "@design4/renderer": "*",
     "@design4/typed-nodes": "*",
+    "@supabase/supabase-js": "^2.109.0",
     "immer": "^10.1.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
