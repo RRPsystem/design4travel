@@ -3,21 +3,46 @@ import { ChatPane } from './features/chat/ChatPane.js';
 import { PreviewPane } from './features/preview/PreviewPane.js';
 import { VersionHistoryPanel } from './features/version-history/VersionHistoryPanel.js';
 import { messageForRollbackError } from './features/version-history/errorMessages.js';
+import { LoginView } from './features/auth/LoginView.js';
 import {
   attachPersistence,
   attachVersions,
   attachVersionSink,
   useDesignDocStore,
 } from './state/designDocStore.js';
+import { useAuthStore } from './state/authStore.js';
 import { localStoragePersistence } from './adapters/persistence/localStorage.js';
 import { createMockVersionHistoryAdapter } from './adapters/versions/mock.js';
 import { seedLandingPage } from './seed/mockLandingPage.js';
 
 export function App() {
+  const status = useAuthStore((s) => s.status);
+  const initSession = useAuthStore((s) => s.initSession);
+
+  useEffect(() => {
+    initSession();
+  }, [initSession]);
+
+  if (status === 'initializing') {
+    return (
+      <div style={fullscreen}>
+        <div style={{ color: '#6b7280' }}>Laden…</div>
+      </div>
+    );
+  }
+  if (status === 'signed-out') {
+    return <LoginView />;
+  }
+  return <AuthedApp />;
+}
+
+function AuthedApp() {
   const reset = useDesignDocStore((s) => s.reset);
   const doc = useDesignDocStore((s) => s.doc);
   const previewingVersion = useDesignDocStore((s) => s.previewingVersion);
   const restoreVersion = useDesignDocStore((s) => s.restoreVersion);
+  const user = useAuthStore((s) => s.user);
+  const signOut = useAuthStore((s) => s.signOut);
 
   const [historyOpen, setHistoryOpen] = useState(false);
   const [previewRestoreError, setPreviewRestoreError] = useState<string | null>(null);
@@ -73,6 +98,12 @@ export function App() {
         adapter={versionsAdapter}
         projectDocumentId={doc.id}
       />
+      <div style={userStrip}>
+        <span style={{ color: '#6b7280' }}>{user?.email}</span>
+        <button type="button" onClick={() => signOut()} style={btnGhost}>
+          Uitloggen
+        </button>
+      </div>
       {previewRestoreConfirm && previewingVersion ? (
         <div style={confirmBackdrop} role="dialog" aria-modal="true">
           <div style={confirmBox}>
@@ -153,9 +184,24 @@ const btnGhost: React.CSSProperties = {
   color: '#374151',
   border: '1px solid #d1d5db',
   borderRadius: 4,
-  padding: '6px 14px',
-  fontSize: 13,
+  padding: '4px 10px',
+  fontSize: 12,
   cursor: 'pointer',
+};
+const userStrip: React.CSSProperties = {
+  position: 'fixed',
+  bottom: 12,
+  left: 12,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  padding: '4px 10px',
+  background: 'rgba(255,255,255,0.9)',
+  border: '1px solid #e5e7eb',
+  borderRadius: 20,
+  fontSize: 11,
+  boxShadow: '0 2px 8px rgba(15,23,42,0.08)',
+  zIndex: 40,
 };
 const toast: React.CSSProperties = {
   position: 'fixed',
