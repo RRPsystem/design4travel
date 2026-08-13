@@ -90,10 +90,12 @@ docker run --rm -v "$(pwd)/supabase/functions/save-document:/work" \
 
 ## Dependencies (exact, pinned)
 
-- `jsr:@supabase/supabase-js@2.112.2`
+- `npm:@supabase/supabase-js@2.109.0`
 - `npm:zod@3.25.76`
 
 `deno.lock` (committed) pins all resolved dependencies with integrity hashes for the complete transitive graph.
+
+The npm-style import (rather than jsr:) is deliberate: the Supabase CLI bundler runs inside a container that cannot always reach `jsr.io` through corporate TLS-intercepting proxies, whereas `registry.npmjs.org` typically passes through. Same package, same behaviour; the version pin (2.109.0) matches `apps/app`.
 
 ## Files
 
