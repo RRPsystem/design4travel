@@ -10,16 +10,29 @@ export const MAX_REQUEST_BODY_BYTES = 16_384;
 
 export const PROMPT_MAX_CHARS = 4000;
 
+// Max chat-turns die de client mag meesturen als context. Ver boven het
+// gemiddelde exchange-aantal per sessie, laag genoeg om runaway te vermijden.
+export const MAX_HISTORY_MESSAGES = 20;
+
 // -----------------------------------------------------------------------------
 // Request / Response
 // -----------------------------------------------------------------------------
+
+const HistoryMessageSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  content: z.string().min(1).max(PROMPT_MAX_CHARS),
+}).strict();
 
 export const GenerateRequestSchema = z.object({
   project_document_id: z.string().uuid(),
   selected_node_id: z.string().min(1).max(200).optional(),
   prompt: z.string().min(1).max(PROMPT_MAX_CHARS),
+  // Chat-history voor multi-turn conversation. Oudste eerst. Excludes de
+  // huidige prompt (die staat in `prompt`). Als weggelaten of leeg: single-turn.
+  history: z.array(HistoryMessageSchema).max(MAX_HISTORY_MESSAGES).optional(),
 }).strict();
 export type GenerateRequest = z.infer<typeof GenerateRequestSchema>;
+export type HistoryMessage = z.infer<typeof HistoryMessageSchema>;
 
 // PatchOp — 1-op-1 identiek aan `PatchOp` uit packages/design-doc/src/patch.ts.
 // Als daar een nieuwe variant bijkomt: UPDATE HIER OOK.
@@ -39,6 +52,12 @@ const NodeInstanceSchema: z.ZodType<{
   })
 );
 
+const PageSchemaLike = z.object({
+  id: z.string().min(1),
+  name: z.string().optional(),
+  root: NodeInstanceSchema,
+});
+
 export const PatchOpSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("setProp"), nodeId: z.string().min(1), key: z.string().min(1), value: z.unknown() }),
   z.object({ kind: z.literal("setProps"), nodeId: z.string().min(1), props: z.record(z.unknown()) }),
@@ -47,6 +66,11 @@ export const PatchOpSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("insertNode"), parentId: z.string().min(1), index: z.number().int().min(0), node: NodeInstanceSchema }),
   z.object({ kind: z.literal("removeNode"), nodeId: z.string().min(1) }),
   z.object({ kind: z.literal("setBrandToken"), key: z.string().min(1), value: z.string() }),
+  // Page-level ops (1-op-1 met packages/design-doc/src/patch.ts)
+  z.object({ kind: z.literal("addPage"), page: PageSchemaLike, index: z.number().int().min(0).optional() }),
+  z.object({ kind: z.literal("removePage"), pageId: z.string().min(1) }),
+  z.object({ kind: z.literal("renamePage"), pageId: z.string().min(1), name: z.string().min(1).max(200) }),
+  z.object({ kind: z.literal("reorderPages"), order: z.array(z.string()).min(1) }),
 ]);
 export type PatchOp = z.infer<typeof PatchOpSchema>;
 
@@ -203,6 +227,84 @@ export const TOOL_SET_BRAND_TOKEN = {
   },
 } as const;
 
+export const TOOL_ADD_PAGE = {
+  name: "add_page",
+  description:
+    "Add a new page to the document. Use this when the user wants a fresh page for a new subject (e.g. 'maak een golfpagina' → new page with id 'page-golf'). The `page` must have a unique `id` (not equal to any existing page id), an optional friendly `name`, and a `root` NodeInstance (typically a layout-column). `index` is optional; without it the new page appears at the end. After adding, you'll usually want to insert_node into the new page's root to populate it — emit those tool_use blocks in the same response.",
+  input_schema: {
+    type: "object",
+    properties: {
+      page: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "unique page id, kebab-case like 'page-golf'" },
+          name: { type: "string", description: "friendly display name like 'Golfreis'" },
+          root: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              type: { type: "string" },
+              props: { type: "object", additionalProperties: true },
+              children: { type: "array", items: { type: "object" } },
+              bind: { type: "object", additionalProperties: { type: "string" } },
+            },
+            required: ["id", "type", "props"],
+            additionalProperties: true,
+          },
+        },
+        required: ["id", "root"],
+        additionalProperties: false,
+      },
+      index: { type: "integer", minimum: 0, description: "optional insertion index" },
+    },
+    required: ["page"],
+    additionalProperties: false,
+  },
+} as const;
+
+export const TOOL_REMOVE_PAGE = {
+  name: "remove_page",
+  description:
+    "Remove a page from the document. Cannot remove the only remaining page. Use when the user explicitly asks to delete a page.",
+  input_schema: {
+    type: "object",
+    properties: {
+      pageId: { type: "string" },
+    },
+    required: ["pageId"],
+    additionalProperties: false,
+  },
+} as const;
+
+export const TOOL_RENAME_PAGE = {
+  name: "rename_page",
+  description:
+    "Rename a page (sets its `name` display label; the `id` stays the same).",
+  input_schema: {
+    type: "object",
+    properties: {
+      pageId: { type: "string" },
+      name: { type: "string" },
+    },
+    required: ["pageId", "name"],
+    additionalProperties: false,
+  },
+} as const;
+
+export const TOOL_REORDER_PAGES = {
+  name: "reorder_pages",
+  description:
+    "Reorder the pages of the document. `order` must be a permutation of ALL existing page ids.",
+  input_schema: {
+    type: "object",
+    properties: {
+      order: { type: "array", items: { type: "string" }, minItems: 1 },
+    },
+    required: ["order"],
+    additionalProperties: false,
+  },
+} as const;
+
 export const TOOL_DELEGATE_TO_OPUS = {
   name: "delegate_to_opus",
   description:
@@ -235,6 +337,10 @@ export const ROUTER_TOOLS = [
   TOOL_INSERT_NODE,
   TOOL_REMOVE_NODE,
   TOOL_SET_BRAND_TOKEN,
+  TOOL_ADD_PAGE,
+  TOOL_REMOVE_PAGE,
+  TOOL_RENAME_PAGE,
+  TOOL_REORDER_PAGES,
   TOOL_DELEGATE_TO_OPUS,
 ] as const;
 
@@ -248,6 +354,10 @@ export const SPECIALIST_TOOLS = [
   TOOL_INSERT_NODE,
   TOOL_REMOVE_NODE,
   TOOL_SET_BRAND_TOKEN,
+  TOOL_ADD_PAGE,
+  TOOL_REMOVE_PAGE,
+  TOOL_RENAME_PAGE,
+  TOOL_REORDER_PAGES,
 ] as const;
 
 // -----------------------------------------------------------------------------
@@ -295,4 +405,8 @@ const TOOL_NAME_TO_OP_KIND: Readonly<Record<string, PatchOp["kind"]>> = Object.f
   insert_node: "insertNode",
   remove_node: "removeNode",
   set_brand_token: "setBrandToken",
+  add_page: "addPage",
+  remove_page: "removePage",
+  rename_page: "renamePage",
+  reorder_pages: "reorderPages",
 });

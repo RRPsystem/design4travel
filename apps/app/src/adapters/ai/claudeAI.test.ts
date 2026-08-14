@@ -79,6 +79,44 @@ describe('ClaudeAIAdapter', () => {
     });
   });
 
+  it('forwards history when present, skips it when empty', async () => {
+    const { client, invoke } = makeClient({
+      invokeResult: { data: { assistantMessage: 'ok', patches: [] }, error: null },
+    });
+    const adapter = new ClaudeAIAdapter({ client, projectDocumentId: DOC_ID });
+
+    // Met history
+    await adapter.generatePatch(
+      {
+        doc: makeDoc(),
+        history: [
+          { role: 'user', content: 'vorige vraag' },
+          { role: 'assistant', content: 'vorig antwoord' },
+        ],
+      },
+      'nieuwe vraag',
+    );
+    expect(invoke).toHaveBeenLastCalledWith('generate-patch', {
+      body: {
+        project_document_id: DOC_ID,
+        prompt: 'nieuwe vraag',
+        history: [
+          { role: 'user', content: 'vorige vraag' },
+          { role: 'assistant', content: 'vorig antwoord' },
+        ],
+      },
+    });
+
+    // Zonder history — history-veld MAG niet in de body zitten
+    await adapter.generatePatch({ doc: makeDoc(), history: [] }, 'iets anders');
+    expect(invoke).toHaveBeenLastCalledWith('generate-patch', {
+      body: {
+        project_document_id: DOC_ID,
+        prompt: 'iets anders',
+      },
+    });
+  });
+
   it('throws on non-2xx (HTTP error) with status + code in message', async () => {
     const { client } = makeClient({
       invokeResult: {

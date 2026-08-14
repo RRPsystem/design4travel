@@ -13,6 +13,7 @@ import { buildSystemPrompt } from "./prompts.ts";
 import {
   type AnthropicCallFailure,
   type AnthropicCallResult,
+  type AnthropicMessageInput,
   callAnthropic,
   extractAssistantText,
   extractToolUses,
@@ -337,12 +338,23 @@ export function makeHandler(deps: HandlerDeps) {
     const specialistModel = deps.getSpecialistModel();
     const betaHeaders = deps.getBetaHeaders() ?? undefined;
 
+    // Bouw de messages-array: history (oudste eerst) + huidige user prompt.
+    // Multi-turn zorgt dat vervolgvragen zoals "iets kleiner" of "optie 2"
+    // context hebben. Zonder history: single-turn zoals voorheen.
+    const historyMessages: AnthropicMessageInput[] = (input.history ?? []).map(
+      (m) => ({ role: m.role, content: m.content }),
+    );
+    const routerMessages: AnthropicMessageInput[] = [
+      ...historyMessages,
+      { role: "user", content: input.prompt },
+    ];
+
     const routerResult = await deps.callAnthropic({
       apiKey,
       model: orchestratorModel,
       system: systemPrompt,
       systemCacheControl: true,
-      userText: input.prompt,
+      messages: routerMessages,
       tools: ROUTER_TOOLS,
       effort: "high",
       betaHeaders,
@@ -397,12 +409,19 @@ export function makeHandler(deps: HandlerDeps) {
     // -------------------------------------------------------------------------
     // Opus specialist-call (na delegate)
     // -------------------------------------------------------------------------
+    // Opus krijgt óók de history mee — de enriched_prompt is context van
+    // Sonnet's route-beslissing, maar Opus moet de eerdere dialoog kunnen
+    // zien om vervolgvragen ("die vorige suggestie, doe die") te begrijpen.
+    const specialistMessages: AnthropicMessageInput[] = [
+      ...historyMessages,
+      { role: "user", content: delegate.enriched_prompt },
+    ];
     const specialistResult = await deps.callAnthropic({
       apiKey,
       model: specialistModel,
       system: systemPrompt,
       systemCacheControl: true,
-      userText: delegate.enriched_prompt,
+      messages: specialistMessages,
       tools: SPECIALIST_TOOLS,
       // "xhigh" wordt gebruikt voor de delegate-pad omdat de router expliciet
       // heeft geoordeeld dat dit een zwaardere-quality-taak is.

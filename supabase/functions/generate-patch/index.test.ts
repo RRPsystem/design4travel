@@ -69,20 +69,35 @@ function newSpy(): Spy {
   };
 }
 
+interface CallSnapshot {
+  userText: string;
+  messages: Array<{ role: string; content: string }>;
+  model: string;
+}
+
 interface AnthropicScript {
-  router?: (userText: string) => AnthropicCallResult | AnthropicCallFailure;
-  specialist?: (userText: string) => AnthropicCallResult | AnthropicCallFailure;
+  router?: (snap: CallSnapshot) => AnthropicCallResult | AnthropicCallFailure;
+  specialist?: (snap: CallSnapshot) => AnthropicCallResult | AnthropicCallFailure;
 }
 
 function makeAnthropicCall(spy: Spy, script: AnthropicScript) {
   let callIndex = 0;
-  return async function (input: { userText: string; model: string }) {
+  return async function (input: {
+    messages: Array<{ role: string; content: string }>;
+    model: string;
+  }) {
     spy.anthropicCalls += 1;
     const isRouter = callIndex === 0;
     callIndex += 1;
     const impl = isRouter ? script.router : script.specialist;
     if (!impl) throw new Error(`no anthropic-mock for ${isRouter ? "router" : "specialist"}`);
-    return impl(input.userText);
+    const last = input.messages[input.messages.length - 1];
+    const snap: CallSnapshot = {
+      userText: last?.content ?? "",
+      messages: input.messages,
+      model: input.model,
+    };
+    return impl(snap);
   };
 }
 
@@ -321,9 +336,9 @@ Deno.test("delegate path — router emits delegate_to_opus, specialist runs, pat
   const h = makeHandler(
     makeDeps(spy, {
       router: () => routerResp,
-      specialist: (userText) => {
+      specialist: (snap) => {
         // Verifieer dat Opus de enriched_prompt kreeg, niet de originele prompt.
-        isTrue(userText.includes("Redesign the hero"), "opus receives enriched_prompt");
+        isTrue(snap.userText.includes("Redesign the hero"), "opus receives enriched_prompt");
         return opusResp;
       },
     }),
@@ -348,6 +363,72 @@ Deno.test("delegate path — router emits delegate_to_opus, specialist runs, pat
   eq(specialistMetric.parent_call_id, "metric-1");
   eq(specialistMetric.model, "claude-opus-5");
   eq(specialistMetric.route_reason, "Vague creative ask requiring judgement");
+});
+
+Deno.test("multi-turn: history in body is forwarded to Anthropic as prior messages", async () => {
+  const spy = newSpy();
+  let capturedMessages: Array<{ role: string; content: string }> = [];
+  const h = makeHandler(
+    makeDeps(spy, {
+      router: (snap) => {
+        capturedMessages = snap.messages;
+        return successResponse({
+          content: [
+            { type: "text", text: "OK." },
+            { type: "tool_use", id: "tu", name: "set_prop", input: { nodeId: "hero", key: "title", value: "X" } },
+          ],
+        });
+      },
+    }),
+  );
+  const bodyWithHistory = {
+    ...OK_BODY,
+    history: [
+      { role: "user", content: "eerste vraag" },
+      { role: "assistant", content: "eerste antwoord" },
+      { role: "user", content: "tweede vraag" },
+      { role: "assistant", content: "tweede antwoord" },
+    ],
+  };
+  const res = await h(makeReq(bodyWithHistory));
+  eq(res.status, 200);
+  // 4 history-messages + 1 current prompt = 5 total, in volgorde.
+  eq(capturedMessages.length, 5);
+  eq(capturedMessages[0]!.role, "user");
+  eq(capturedMessages[0]!.content, "eerste vraag");
+  eq(capturedMessages[4]!.role, "user");
+  eq(capturedMessages[4]!.content, OK_BODY.prompt);
+});
+
+Deno.test("page-ops: add_page tool_use maps to addPage PatchOp", async () => {
+  const spy = newSpy();
+  const h = makeHandler(
+    makeDeps(spy, {
+      router: () =>
+        successResponse({
+          content: [
+            { type: "text", text: "Golfpagina toegevoegd." },
+            {
+              type: "tool_use",
+              id: "tu_ap",
+              name: "add_page",
+              input: {
+                page: {
+                  id: "page-golf",
+                  name: "Golfreis",
+                  root: { id: "golf-root", type: "layout-column", props: {} },
+                },
+              },
+            },
+          ],
+        }),
+    }),
+  );
+  const res = await h(makeReq(OK_BODY));
+  eq(res.status, 200);
+  const body = (await res.json()) as { patches: Array<{ kind: string }> };
+  eq(body.patches.length, 1);
+  eq(body.patches[0]!.kind, "addPage");
 });
 
 Deno.test("Anthropic 429 on router → 429 rate_limited, no specialist call", async () => {

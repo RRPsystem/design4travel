@@ -1,7 +1,19 @@
 import { useCallback, useMemo } from 'react';
 import { getAI } from '../../adapters/ai/registry.js';
-import { useChatStore } from '../../state/chatStore.js';
+import type { ChatTurn } from '../../adapters/ai/types.js';
+import { useChatStore, type ChatMessage } from '../../state/chatStore.js';
 import { useDesignDocStore } from '../../state/designDocStore.js';
+
+// Max chat-turns die we als context meesturen. Aligned met MAX_HISTORY_MESSAGES
+// in de Edge Function (20). De welkomst-message (id='welcome') is een canned
+// intro-tekst, geen echte turn — die filteren we eruit.
+const MAX_HISTORY = 20;
+
+function buildHistory(messages: ChatMessage[]): ChatTurn[] {
+  const real = messages.filter((m) => m.id !== 'welcome' && m.text.trim().length > 0);
+  const tail = real.slice(-MAX_HISTORY);
+  return tail.map((m) => ({ role: m.role, content: m.text }));
+}
 
 export function useChatController() {
   const busy = useChatStore((s) => s.busy);
@@ -12,11 +24,17 @@ export function useChatController() {
     async (text: string) => {
       const trimmed = text.trim();
       if (!trimmed || busy) return;
+      // Snapshot history VÓÓR de user-message toe te voegen — de current
+      // prompt gaat als 2e arg naar generatePatch, niet in history.
+      const historyBefore = buildHistory(useChatStore.getState().messages);
       append({ role: 'user', text: trimmed });
       setBusy(true);
       try {
         const { doc, selectedNodeId } = useDesignDocStore.getState();
-        const response = await getAI().generatePatch({ doc, selectedNodeId }, trimmed);
+        const response = await getAI().generatePatch(
+          { doc, selectedNodeId, history: historyBefore },
+          trimmed,
+        );
         if (response.patches.length > 0) {
           useDesignDocStore.getState().applyOps(response.patches);
         }

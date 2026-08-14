@@ -114,4 +114,100 @@ describe('applyPatch', () => {
     expect(next.pages[0]!.root.children![0]!.props.text).toBe('1');
     expect(next.pages[0]!.root.children![1]!.props.text).toBe('2');
   });
+
+  it('addPage inserts a new page at end by default', () => {
+    const doc = makeDoc();
+    const next = applyPatch(doc, {
+      kind: 'addPage',
+      page: {
+        id: 'page-golf',
+        name: 'Golfreis',
+        root: { id: 'golf-root', type: 'layout-column', props: {}, children: [] },
+      },
+    });
+    expect(next.pages).toHaveLength(2);
+    expect(next.pages[1]!.id).toBe('page-golf');
+    expect(next.pages[1]!.name).toBe('Golfreis');
+  });
+
+  it('addPage respects explicit index', () => {
+    const doc = makeDoc();
+    const next = applyPatch(doc, {
+      kind: 'addPage',
+      index: 0,
+      page: {
+        id: 'page-cover',
+        name: 'Cover',
+        root: { id: 'cover-root', type: 'layout-column', props: {}, children: [] },
+      },
+    });
+    expect(next.pages[0]!.id).toBe('page-cover');
+    expect(next.pages[1]!.id).toBe('page-1');
+  });
+
+  it('addPage rejects duplicate page id', () => {
+    const doc = makeDoc();
+    expect(() =>
+      applyPatch(doc, {
+        kind: 'addPage',
+        page: {
+          id: 'page-1', // botsing met bestaande page
+          root: { id: 'x', type: 'layout-column', props: {} },
+        },
+      }),
+    ).toThrow(PatchError);
+  });
+
+  it('removePage removes a page', () => {
+    const doc = makeDoc();
+    const twoPages = applyPatch(doc, {
+      kind: 'addPage',
+      page: {
+        id: 'page-2',
+        root: { id: 'root2', type: 'layout-column', props: {} },
+      },
+    });
+    const removed = applyPatch(twoPages, { kind: 'removePage', pageId: 'page-1' });
+    expect(removed.pages).toHaveLength(1);
+    expect(removed.pages[0]!.id).toBe('page-2');
+  });
+
+  it('removePage refuses to remove the only remaining page', () => {
+    const doc = makeDoc();
+    expect(() =>
+      applyPatch(doc, { kind: 'removePage', pageId: 'page-1' }),
+    ).toThrow(PatchError);
+  });
+
+  it('renamePage sets the name', () => {
+    const doc = makeDoc();
+    const next = applyPatch(doc, {
+      kind: 'renamePage',
+      pageId: 'page-1',
+      name: 'Home',
+    });
+    expect(next.pages[0]!.name).toBe('Home');
+  });
+
+  it('reorderPages permutes pages', () => {
+    const doc = applyPatch(makeDoc(), {
+      kind: 'addPage',
+      page: {
+        id: 'page-2',
+        root: { id: 'root2', type: 'layout-column', props: {} },
+      },
+    });
+    const next = applyPatch(doc, {
+      kind: 'reorderPages',
+      order: ['page-2', 'page-1'],
+    });
+    expect(next.pages.map((p) => p.id)).toEqual(['page-2', 'page-1']);
+  });
+
+  it('reorderPages rejects invalid order (missing id)', () => {
+    const doc = makeDoc();
+    expect(() =>
+      applyPatch(doc, { kind: 'reorderPages', order: ['ghost'] }),
+    ).toThrow(PatchError);
+  });
 });

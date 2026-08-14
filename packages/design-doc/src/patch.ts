@@ -1,5 +1,5 @@
 import { produce } from 'immer';
-import type { DesignDoc, NodeInstance } from './schema.js';
+import type { DesignDoc, NodeInstance, Page } from './schema.js';
 
 export type PatchOp =
   | { kind: 'setProp'; nodeId: string; key: string; value: unknown }
@@ -8,7 +8,11 @@ export type PatchOp =
   | { kind: 'reorderChildren'; parentId: string; order: string[] }
   | { kind: 'insertNode'; parentId: string; index: number; node: NodeInstance }
   | { kind: 'removeNode'; nodeId: string }
-  | { kind: 'setBrandToken'; key: string; value: string };
+  | { kind: 'setBrandToken'; key: string; value: string }
+  | { kind: 'addPage'; page: Page; index?: number }
+  | { kind: 'removePage'; pageId: string }
+  | { kind: 'renamePage'; pageId: string; name: string }
+  | { kind: 'reorderPages'; order: string[] };
 
 export class PatchError extends Error {
   constructor(
@@ -115,6 +119,45 @@ export function applyPatch(doc: DesignDoc, op: PatchOp): DesignDoc {
       }
       case 'setBrandToken': {
         draft.brandTokens = { ...(draft.brandTokens ?? {}), [op.key]: op.value };
+        break;
+      }
+      case 'addPage': {
+        // Invariant: unique page-ids. Rejecten hier voorkomt dat de UI in
+        // een inconsistente state komt bij Claude die per ongeluk een
+        // bestaande id hergebruikt.
+        if (draft.pages.some((p) => p.id === op.page.id)) {
+          throw new PatchError(`Page id already exists: ${op.page.id}`, op);
+        }
+        const idx =
+          op.index === undefined
+            ? draft.pages.length
+            : Math.max(0, Math.min(op.index, draft.pages.length));
+        draft.pages.splice(idx, 0, op.page);
+        break;
+      }
+      case 'removePage': {
+        const idx = draft.pages.findIndex((p) => p.id === op.pageId);
+        if (idx < 0) throw new PatchError(`Page not found: ${op.pageId}`, op);
+        // Doc-invariant: minstens één pagina (DesignDocSchema pages.min(1)).
+        if (draft.pages.length === 1) {
+          throw new PatchError(`Cannot remove the only remaining page`, op);
+        }
+        draft.pages.splice(idx, 1);
+        break;
+      }
+      case 'renamePage': {
+        const page = draft.pages.find((p) => p.id === op.pageId);
+        if (!page) throw new PatchError(`Page not found: ${op.pageId}`, op);
+        page.name = op.name;
+        break;
+      }
+      case 'reorderPages': {
+        const map = new Map(draft.pages.map((p) => [p.id, p]));
+        const next = op.order.map((id) => map.get(id));
+        if (next.some((p) => !p) || next.length !== draft.pages.length) {
+          throw new PatchError(`reorderPages order mismatch`, op);
+        }
+        draft.pages = next as typeof draft.pages;
         break;
       }
       default: {

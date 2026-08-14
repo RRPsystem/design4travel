@@ -48,12 +48,22 @@ export interface AnthropicMessageResponse {
   usage: AnthropicUsage;
 }
 
+export interface AnthropicMessageInput {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface AnthropicCallInput {
   apiKey: string;
   model: string;
   system: string;
   systemCacheControl?: boolean;
-  userText: string;
+  /**
+   * Volledige conversatie voor deze turn. Laatste message MOET role='user' zijn.
+   * Voor single-turn: één user-message met de prompt.
+   * Voor multi-turn: history-messages (oudste eerst) + tot slot de huidige user-prompt.
+   */
+  messages: AnthropicMessageInput[];
   tools: readonly unknown[];
   toolChoice?: "auto" | { type: "tool"; name: string };
   effort: "high" | "xhigh";
@@ -90,9 +100,7 @@ export async function callAnthropic(
     model: input.model,
     max_tokens: input.maxTokens ?? 8192,
     system: systemBlocks,
-    messages: [
-      { role: "user", content: input.userText },
-    ],
+    messages: input.messages,
     tools: input.tools,
     tool_choice: input.toolChoice ?? { type: "auto" },
     // Adaptive thinking (Claude 5.x): geen budget_tokens (400 op 4.7+).

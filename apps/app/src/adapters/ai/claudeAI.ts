@@ -34,6 +34,9 @@ export class ClaudeAIAdapter implements AIAdapter {
       prompt,
     };
     if (context.selectedNodeId) body.selected_node_id = context.selectedNodeId;
+    if (context.history && context.history.length > 0) {
+      body.history = context.history;
+    }
 
     const res = await invokeEdge<GenerateResponse>(this.client, 'generate-patch', body);
 
