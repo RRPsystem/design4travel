@@ -102,6 +102,8 @@ function saveStateLabel(s: string) {
       return 'Opgeslagen';
     case 'error':
       return 'Fout';
+    case 'lock-conflict':
+      return 'Conflict — autosave gepauzeerd';
     default:
       return '';
   }
@@ -114,6 +116,7 @@ function saveStateColor(s: string) {
     case 'saved':
       return '#16a34a';
     case 'error':
+    case 'lock-conflict':
       return '#dc2626';
     default:
       return '#6b7280';

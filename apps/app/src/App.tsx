@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { SCHEMA_VERSION, type VersionHistoryAdapter } from '@design4/design-doc';
 import { ChatPane } from './features/chat/ChatPane.js';
 import { PreviewPane } from './features/preview/PreviewPane.js';
 import { VersionHistoryPanel } from './features/version-history/VersionHistoryPanel.js';
@@ -7,12 +8,16 @@ import { LoginView } from './features/auth/LoginView.js';
 import {
   attachPersistence,
   attachVersions,
-  attachVersionSink,
   useDesignDocStore,
 } from './state/designDocStore.js';
 import { useAuthStore } from './state/authStore.js';
-import { localStoragePersistence } from './adapters/persistence/localStorage.js';
-import { createMockVersionHistoryAdapter } from './adapters/versions/mock.js';
+import { supabase } from './adapters/supabase/client.js';
+import { createSupabasePersistenceAdapter } from './adapters/persistence/supabase.js';
+import {
+  bootstrapDocument,
+  type BootstrapResult,
+} from './adapters/persistence/bootstrap.js';
+import { createSupabaseVersionHistoryAdapter } from './adapters/versions/supabase.js';
 import { seedLandingPage } from './seed/mockLandingPage.js';
 
 export function App() {
@@ -47,24 +52,53 @@ function AuthedApp() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [previewRestoreError, setPreviewRestoreError] = useState<string | null>(null);
   const [previewRestoreConfirm, setPreviewRestoreConfirm] = useState(false);
+  const [bootstrapError, setBootstrapError] = useState<BootstrapResult | null>(null);
+  const [versionsAdapter, setVersionsAdapter] = useState<VersionHistoryAdapter | null>(
+    null,
+  );
 
-  // Één versions-adapter voor de hele app-levensduur.
-  const versionsAdapter = useMemo(() => createMockVersionHistoryAdapter(), []);
-
+  // Bootstrap loopt exact één keer per signed-in-mount:
+  //   1. bootstrap → project_id, project_document_id, doc, lock_version
+  //   2. reset store + seed lock_version
+  //   3. attach Supabase-adapters (autosave-gate: attachPersistence is de laatste
+  //      stap zodat scheduleSave nooit fires vóórdat lock_version bekend is)
   useEffect(() => {
-    attachPersistence(localStoragePersistence);
-    attachVersions(versionsAdapter);
-    attachVersionSink((doc) => versionsAdapter.recordSnapshot(doc.id, doc));
+    let cancelled = false;
     (async () => {
       const seed = seedLandingPage();
-      const stored = await localStoragePersistence.load(seed.id);
-      const initial = stored ?? seed;
-      reset(initial);
-      // Leg de startversie vast zodat er meteen historie is (versie 1).
-      const summary = versionsAdapter.recordSnapshot(initial.id, initial);
-      useDesignDocStore.setState({ currentLockVersion: summary.version_number });
+      const result = await bootstrapDocument({ client: supabase, seedDoc: seed });
+      if (cancelled) return;
+      if (!result.ok) {
+        setBootstrapError(result);
+        return;
+      }
+      reset(result.doc);
+      useDesignDocStore.setState({ currentLockVersion: result.lockVersion });
+
+      const versions = createSupabaseVersionHistoryAdapter({
+        client: supabase,
+        onLockVersionUpdate: (n) =>
+          useDesignDocStore.setState({ currentLockVersion: n }),
+      });
+      const persistence = createSupabasePersistenceAdapter({
+        client: supabase,
+        projectId: result.projectId,
+        schemaVersion: SCHEMA_VERSION,
+        getExpectedLockVersion: () =>
+          useDesignDocStore.getState().currentLockVersion,
+        onLockVersionUpdate: (n) =>
+          useDesignDocStore.setState({ currentLockVersion: n }),
+      });
+
+      attachVersions(versions);
+      // Autosave-gate: attach ALS ALLERLAATSTE — pas nu mogen mutaties fires.
+      attachPersistence(persistence);
+      setVersionsAdapter(versions);
     })();
-  }, [reset, versionsAdapter]);
+    return () => {
+      cancelled = true;
+    };
+  }, [reset]);
 
   const handleRequestRestorePreviewed = () => {
     setPreviewRestoreError(null);
@@ -80,7 +114,11 @@ function AuthedApp() {
     setPreviewRestoreConfirm(false);
   };
 
-  if (!doc?.id) {
+  if (bootstrapError) {
+    return <BootstrapErrorView result={bootstrapError} onSignOut={signOut} />;
+  }
+
+  if (!doc?.id || !versionsAdapter) {
     return (
       <div style={fullscreen}>
         <div style={{ color: '#6b7280' }}>Laden…</div>
@@ -143,6 +181,57 @@ function AuthedApp() {
     </div>
   );
 }
+
+function BootstrapErrorView({
+  result,
+  onSignOut,
+}: {
+  result: BootstrapResult;
+  onSignOut: () => void;
+}) {
+  if (result.ok) return null;
+  let title = 'Kon werkruimte niet laden';
+  let body = '';
+  if (result.reason === 'auth_required') {
+    title = 'Sessie verlopen';
+    body = 'Je bent uitgelogd. Log opnieuw in om verder te werken.';
+  } else if (result.reason === 'no_active_organization') {
+    title = 'Geen actieve werkruimte';
+    body =
+      'Er is geen actieve werkruimte aan je account gekoppeld. Neem contact op met de beheerder.';
+  } else if (result.reason === 'multiple_active_organizations') {
+    title = 'Meerdere werkruimtes';
+    const names = (result.organizations ?? []).map((o) => o.name).join(', ');
+    body = `Je bent lid van meerdere werkruimtes (${names}). Werkruimte-keuze is nog niet ondersteund in deze versie.`;
+  } else {
+    body = `Er ging iets mis bij het initialiseren. Probeer het later opnieuw. (${result.detail ?? 'geen details'})`;
+  }
+  return (
+    <div style={fullscreen}>
+      <div style={bootstrapErrorBox}>
+        <div style={{ fontWeight: 700, fontSize: 15 }}>{title}</div>
+        <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.5 }}>{body}</div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" onClick={onSignOut} style={btnGhost}>
+            Uitloggen
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const bootstrapErrorBox: React.CSSProperties = {
+  margin: 'auto',
+  background: '#fff',
+  borderRadius: 8,
+  padding: 24,
+  width: 'min(480px, 92vw)',
+  boxShadow: '0 12px 32px rgba(15,23,42,0.15)',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 12,
+};
 
 const fullscreen: React.CSSProperties = {
   position: 'fixed',

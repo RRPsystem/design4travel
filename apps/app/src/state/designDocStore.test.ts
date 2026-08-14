@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it } from 'vitest';
-import type { DesignDoc } from '@design4/design-doc';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { DesignDoc, PersistenceAdapter } from '@design4/design-doc';
 import {
   attachPersistence,
   attachVersions,
@@ -7,6 +7,8 @@ import {
   useDesignDocStore,
 } from './designDocStore.js';
 import { createMockVersionHistoryAdapter } from '../adapters/versions/mock.js';
+import { LockVersionMismatchError } from '../adapters/persistence/supabase.js';
+import { messageForRollbackError } from '../features/version-history/errorMessages.js';
 import { seedLandingPage } from '../seed/mockLandingPage.js';
 
 function noopPersistence() {
@@ -111,6 +113,41 @@ describe('designDocStore — version history integration', () => {
     expect(result).toEqual({ ok: false, error: 'insufficient_role' });
     // Doc is not mutated.
     expect(useDesignDocStore.getState().doc.project.title).toBe(doc.project.title);
+  });
+
+  it('save that throws LockVersionMismatchError → saveState=lock-conflict, subsequent saves are paused', async () => {
+    // Custom persistence die bij de eerste save een LockVersionMismatchError throwt,
+    // daarna een spy houdt bij hoe vaak save wordt aangeroepen.
+    const saveSpy = vi.fn(async () => {
+      throw new LockVersionMismatchError();
+    });
+    const persistence: PersistenceAdapter = {
+      async load() { return null; },
+      save: saveSpy,
+      async delete() {},
+    };
+    attachPersistence(persistence);
+    attachVersions(createMockVersionHistoryAdapter());
+    // Belangrijk: géén versionSink hangen zodat scheduleSave niet extra dingen doet.
+    useDesignDocStore.getState().reset(seedLandingPage());
+
+    // Trigger een save via applyOps (lege ops is voldoende — de store roept scheduleSave).
+    useDesignDocStore.getState().applyOps([]);
+    // De 300ms debounce afwachten.
+    await new Promise((r) => setTimeout(r, 350));
+
+    expect(saveSpy).toHaveBeenCalledTimes(1);
+    expect(useDesignDocStore.getState().saveState).toBe('lock-conflict');
+    expect(useDesignDocStore.getState().lastError).toBe(
+      messageForRollbackError('lock_version_mismatch'),
+    );
+
+    // Volgende applyOps mag de doc muteren maar mag GEEN nieuwe save triggeren.
+    useDesignDocStore.getState().applyOps([]);
+    await new Promise((r) => setTimeout(r, 350));
+    expect(saveSpy).toHaveBeenCalledTimes(1); // niet nogmaals!
+    // saveState is nog steeds lock-conflict.
+    expect(useDesignDocStore.getState().saveState).toBe('lock-conflict');
   });
 
   it('applyOps ends preview-mode automatically (safety)', async () => {

@@ -16,13 +16,21 @@ import {
 } from '@design4/design-doc';
 import type { PersistenceAdapter } from '@design4/design-doc';
 import type { SampleDataVariant } from '@design4/data-bindings';
+import { isLockVersionMismatch } from '../adapters/persistence/supabase.js';
+import { messageForRollbackError } from '../features/version-history/errorMessages.js';
 
 type State = {
   doc: DesignDoc;
   stack: UndoStack;
   selectedNodeId?: string;
   variant: SampleDataVariant;
-  saveState: 'idle' | 'saving' | 'saved' | 'error';
+  /**
+   * `lock-conflict` is een absorberende state: de laatste save is met
+   * `lock_version_mismatch` afgewezen. Autosave is gepauzeerd tot een
+   * expliciete rebase/reload (nu aparte scope). Verdere mutaties werken de
+   * in-memory doc wél bij zodat de gebruiker niet zijn werk kwijtraakt.
+   */
+  saveState: 'idle' | 'saving' | 'saved' | 'error' | 'lock-conflict';
   lastError?: string;
   /** Huidige backend lock_version — bumpt bij elke save/rollback. */
   currentLockVersion: number;
@@ -75,6 +83,9 @@ export function attachVersionSink(sink: (doc: DesignDoc) => VersionSummary) {
 
 function scheduleSave(doc: DesignDoc, setState: (s: Partial<State>) => void) {
   if (!persistence) return;
+  // Absorberend: eenmaal in lock-conflict tot rebase/reload — nooit doorvloeien
+  // naar een nieuwe save met een stale lock_version.
+  if (useDesignDocStore.getState().saveState === 'lock-conflict') return;
   if (saveTimer) clearTimeout(saveTimer);
   setState({ saveState: 'saving' });
   saveTimer = setTimeout(async () => {
@@ -87,7 +98,14 @@ function scheduleSave(doc: DesignDoc, setState: (s: Partial<State>) => void) {
         setState({ saveState: 'saved' });
       }
     } catch (e) {
-      setState({ saveState: 'error', lastError: String(e) });
+      if (isLockVersionMismatch(e)) {
+        setState({
+          saveState: 'lock-conflict',
+          lastError: messageForRollbackError('lock_version_mismatch'),
+        });
+      } else {
+        setState({ saveState: 'error', lastError: String(e) });
+      }
     }
   }, 300);
 }
@@ -119,11 +137,14 @@ export const useDesignDocStore = create<State & Actions>((set, get) => ({
       });
       return;
     }
+    const paused = state.saveState === 'lock-conflict';
     set({
       doc: parsed.data as DesignDoc,
       stack: pushSnapshot(state.stack, state.doc),
-      saveState: 'idle',
-      lastError: undefined,
+      // In lock-conflict blijft de gepauzeerde state (+ NL-melding) staan
+      // zodat de gebruiker mag doortypen zonder dat autosave opnieuw probeert.
+      saveState: paused ? 'lock-conflict' : 'idle',
+      lastError: paused ? state.lastError : undefined,
       // Actieve mutaties beëindigen automatisch een preview-modus.
       previewingVersion: null,
     });
@@ -142,6 +163,8 @@ export const useDesignDocStore = create<State & Actions>((set, get) => ({
     const state = get();
     const res = undoStack(state.stack, state.doc);
     if (!res) return false;
+    // saveState / lastError expres niet aangeraakt — een undo tijdens
+    // lock-conflict houdt de gepauzeerde state intact (scheduleSave short-circuit).
     set({ doc: res.doc, stack: res.stack, previewingVersion: null });
     scheduleSave(res.doc, (s) => set(s));
     return true;
