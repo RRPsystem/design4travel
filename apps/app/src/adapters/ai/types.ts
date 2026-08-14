@@ -24,7 +24,30 @@ export type AIResponse = {
   patches: PatchOp[];
 };
 
+/**
+ * Live-events uit een streaming AI-call. Elk event correspondeert met een
+ * echte upstream-gebeurtenis (Anthropic-stream-event of route-beslissing).
+ * NOOIT fake events voor UX-fluff (zie project-no-fake-ux memory).
+ * Optionele callback naar generatePatch — adapters die niet streamen (Mock)
+ * negeren de callback.
+ */
+export type AIStreamEvent =
+  /** Actief model gewisseld (initieel router, na delegate → specialist). */
+  | { kind: 'model_change'; model: string }
+  /** Text-delta uit de assistant-message. UI concatteert. */
+  | { kind: 'text_delta'; text: string }
+  /** Nieuwe tool_use-call gestart bij Anthropic. Naam bekend, args nog niet volledig. */
+  | { kind: 'tool_start'; index: number; tool: string }
+  /** Tool_use volledig binnen. summary = korte NL-omschrijving. */
+  | { kind: 'tool_complete'; index: number; tool: string; summary: string }
+  /** Router delegate'de naar specialist. UI toont visuele transitie. */
+  | { kind: 'delegate'; from: string; to: string; rationale: string };
+
 export interface AIAdapter {
   readonly name: string;
-  generatePatch(context: AIContext, prompt: string): Promise<AIResponse>;
+  generatePatch(
+    context: AIContext,
+    prompt: string,
+    onEvent?: (event: AIStreamEvent) => void,
+  ): Promise<AIResponse>;
 }

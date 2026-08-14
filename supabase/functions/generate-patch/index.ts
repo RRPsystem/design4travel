@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { makeHandler } from "./handler.ts";
-import { callAnthropic } from "./anthropic.ts";
+import { callAnthropicStream } from "./anthropic.ts";
 
 function requireEnv(name: string): string {
   const v = Deno.env.get(name);
@@ -47,5 +47,5 @@ Deno.serve(makeHandler({
   getSpecialistModel: () => optionalEnv("SPECIALIST_MODEL") ?? "claude-opus-5",
   getBetaHeaders: () => optionalEnv("ANTHROPIC_BETA"),
   now: () => Date.now(),
-  callAnthropic,
+  callAnthropicStream,
 }));

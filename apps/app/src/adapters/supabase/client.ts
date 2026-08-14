@@ -24,3 +24,8 @@ export const supabase: SupabaseClient = createClient(url, anonKey, {
     detectSessionInUrl: true,
   },
 });
+
+// Re-export voor consumers die de raw URL/anon-key nodig hebben (bv.
+// ClaudeAIAdapter's SSE-fetch die niet via supabase.functions.invoke loopt).
+export const supabaseUrl = url;
+export const supabaseAnonKey = anonKey;

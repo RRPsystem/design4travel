@@ -1,22 +1,25 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import {
   CORS_HEADERS,
+  type ClientStreamEvent,
+  type ClientStreamTerminal,
   GenerateRequestSchema,
   jsonResponse,
   MAX_REQUEST_BODY_BYTES,
   type PatchOp,
   ROUTER_TOOLS,
   SPECIALIST_TOOLS,
+  summarizeToolCall,
   toolCallToPatch,
 } from "./schema.ts";
 import { buildSystemPrompt } from "./prompts.ts";
 import {
   type AnthropicCallFailure,
-  type AnthropicCallResult,
   type AnthropicMessageInput,
-  callAnthropic,
-  extractAssistantText,
-  extractToolUses,
+  type AnthropicStreamEvent,
+  type AnthropicStreamStart,
+  type AnthropicUsage,
+  callAnthropicStream,
 } from "./anthropic.ts";
 
 // -----------------------------------------------------------------------------
@@ -33,10 +36,8 @@ const PRICING_VERSION = "anthropic-2026-08";
 
 export interface HandlerDeps {
   /**
-   * Constructor krijgt de user-JWT mee zodat `global.headers.Authorization`
-   * wordt gezet en subsequent `.from().select()`-calls onder de user's RLS-
-   * context lopen. Alleen `getUser(jwt)` doen is niet genoeg — die verifieert
-   * de JWT maar attach't hem niet aan de client.
+   * User-client MET Authorization-header uit de JWT zodat .from().select()
+   * onder de user's RLS-context loopt.
    */
   makeUserClient: (jwt: string) => SupabaseClient;
   makeAdmin: () => SupabaseClient;
@@ -44,10 +45,8 @@ export interface HandlerDeps {
   getOrchestratorModel: () => string;
   getSpecialistModel: () => string;
   getBetaHeaders: () => string | null;
-  /** Nu, in ms. Injectable voor tests. */
   now: () => number;
-  /** Fetch-injectie zodat tests kunnen mocken zonder Deno.env te raken. */
-  callAnthropic: typeof callAnthropic;
+  callAnthropicStream: typeof callAnthropicStream;
 }
 
 // -----------------------------------------------------------------------------
@@ -97,7 +96,7 @@ async function readBoundedBody(
 }
 
 // -----------------------------------------------------------------------------
-// Metrics
+// Metrics (identiek aan pre-streaming pad — kind + parent_call_id-koppeling)
 // -----------------------------------------------------------------------------
 
 interface MetricRow {
@@ -121,12 +120,6 @@ interface MetricRow {
   pricing_version: string;
 }
 
-/**
- * Insert een metric-rij. Fail-open: bij een fout wordt naar console.error
- * gelogd, maar de AI-response wordt NIET geblokkeerd.
- * Retourneert de id van de rij (voor parent_call_id-koppeling), of null bij
- * failure.
- */
 async function insertMetric(admin: SupabaseClient, row: MetricRow): Promise<string | null> {
   try {
     const { data, error } = await admin
@@ -145,39 +138,186 @@ async function insertMetric(admin: SupabaseClient, row: MetricRow): Promise<stri
   }
 }
 
-function metricFromCall(
-  base: Omit<MetricRow, "success" | "error_code" | "request_id" | "input_tokens" | "output_tokens" | "cache_read_tokens" | "cache_creation_tokens" | "thinking_tokens" | "latency_ms" | "provider_cost_microusd">,
-  result: AnthropicCallResult | AnthropicCallFailure,
+function metricFromStream(
+  base: Omit<
+    MetricRow,
+    | "success"
+    | "error_code"
+    | "request_id"
+    | "input_tokens"
+    | "output_tokens"
+    | "cache_read_tokens"
+    | "cache_creation_tokens"
+    | "thinking_tokens"
+    | "latency_ms"
+    | "provider_cost_microusd"
+  >,
+  usage: AnthropicUsage,
+  latencyMs: number,
+  requestId: string | null,
+  errorCode: string | null,
 ): MetricRow {
-  if (result.ok) {
-    const u = result.response.usage;
-    return {
-      ...base,
-      success: true,
-      error_code: null,
-      request_id: result.requestId,
-      input_tokens: u.input_tokens ?? 0,
-      output_tokens: u.output_tokens ?? 0,
-      cache_read_tokens: u.cache_read_input_tokens ?? 0,
-      cache_creation_tokens: u.cache_creation_input_tokens ?? 0,
-      thinking_tokens: u.thinking_tokens ?? 0,
-      latency_ms: result.latencyMs,
-      provider_cost_microusd: null,
-    };
-  }
+  return {
+    ...base,
+    success: errorCode === null,
+    error_code: errorCode,
+    request_id: requestId,
+    input_tokens: usage.input_tokens ?? 0,
+    output_tokens: usage.output_tokens ?? 0,
+    cache_read_tokens: usage.cache_read_input_tokens ?? 0,
+    cache_creation_tokens: usage.cache_creation_input_tokens ?? 0,
+    thinking_tokens: usage.thinking_tokens ?? 0,
+    latency_ms: latencyMs,
+    provider_cost_microusd: null,
+  };
+}
+
+function metricFromFailure(
+  base: Omit<
+    MetricRow,
+    | "success"
+    | "error_code"
+    | "request_id"
+    | "input_tokens"
+    | "output_tokens"
+    | "cache_read_tokens"
+    | "cache_creation_tokens"
+    | "thinking_tokens"
+    | "latency_ms"
+    | "provider_cost_microusd"
+  >,
+  f: AnthropicCallFailure,
+): MetricRow {
   return {
     ...base,
     success: false,
-    error_code: result.errorCode,
-    request_id: result.requestId,
+    error_code: f.errorCode,
+    request_id: f.requestId,
     input_tokens: 0,
     output_tokens: 0,
     cache_read_tokens: 0,
     cache_creation_tokens: 0,
     thinking_tokens: 0,
-    latency_ms: result.latencyMs,
+    latency_ms: f.latencyMs,
     provider_cost_microusd: null,
   };
+}
+
+// -----------------------------------------------------------------------------
+// Stream-accumulator (per Anthropic-call)
+// -----------------------------------------------------------------------------
+
+interface StreamAccum {
+  text: string;
+  toolCalls: Array<{ index: number; name: string; input: Record<string, unknown> }>;
+  usage: AnthropicUsage;
+  errorMessage: string | null;
+  delegate: { enriched_prompt: string; rationale: string } | null;
+}
+
+function newAccum(): StreamAccum {
+  return {
+    text: "",
+    toolCalls: [],
+    usage: { input_tokens: 0, output_tokens: 0 },
+    errorMessage: null,
+    delegate: null,
+  };
+}
+
+function isDelegateInput(
+  input: Record<string, unknown>,
+): { enriched_prompt: string; rationale: string } | null {
+  const ep = input.enriched_prompt;
+  const rat = input.rationale;
+  if (typeof ep !== "string" || ep.length === 0 || ep.length > 8000) return null;
+  if (typeof rat !== "string" || rat.length === 0 || rat.length > 500) return null;
+  return { enriched_prompt: ep, rationale: rat };
+}
+
+/**
+ * Consumeer een Anthropic-stream, emit client-facing events per Anthropic-
+ * event, en accumuleer state voor de metric + de uiteindelijke patches.
+ */
+async function consumeAnthropicStream(
+  events: AsyncGenerator<AnthropicStreamEvent, void, void>,
+  emit: (evt: ClientStreamEvent) => void,
+  detectDelegate: boolean,
+): Promise<StreamAccum> {
+  const acc = newAccum();
+  for await (const evt of events) {
+    switch (evt.kind) {
+      case "text_delta":
+        acc.text += evt.text;
+        emit({ kind: "text_delta", text: evt.text });
+        break;
+      case "tool_start":
+        emit({ kind: "tool_start", index: evt.index, tool: evt.name });
+        break;
+      case "tool_input_delta":
+        // Bewust NIET geëmit'd naar de client — te granulair voor de UI.
+        // Client krijgt tool_complete zodra de volledige JSON binnen is.
+        break;
+      case "tool_complete":
+        acc.toolCalls.push({ index: evt.index, name: evt.name, input: evt.input });
+        emit({
+          kind: "tool_complete",
+          index: evt.index,
+          tool: evt.name,
+          summary: summarizeToolCall(evt.name, evt.input),
+        });
+        if (detectDelegate && evt.name === "delegate_to_opus") {
+          const d = isDelegateInput(evt.input);
+          if (d) acc.delegate = d;
+        }
+        break;
+      case "usage":
+        // Merge — laatste usage-event uit message_delta bevat totaal.
+        acc.usage = { ...acc.usage, ...evt.usage };
+        break;
+      case "message_stop":
+        // Einde van deze stream. Loop exit't natuurlijk.
+        break;
+      case "error":
+        acc.errorMessage = evt.message;
+        break;
+    }
+  }
+  return acc;
+}
+
+/**
+ * Filter tool-calls → PatchOp[]. Skip'd delegate_to_opus, ongeldige input,
+ * en onbekende tool-namen.
+ */
+function toPatches(
+  toolCalls: Array<{ name: string; input: Record<string, unknown> }>,
+): PatchOp[] {
+  const out: PatchOp[] = [];
+  for (const t of toolCalls) {
+    if (t.name === "delegate_to_opus") continue;
+    const conv = toolCallToPatch(t.name, t.input);
+    if (conv.kind === "patch") out.push(conv.op);
+  }
+  return out;
+}
+
+// -----------------------------------------------------------------------------
+// SSE-encoder helpers
+// -----------------------------------------------------------------------------
+
+function sseEncode(event: string, data: unknown): Uint8Array {
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  return new TextEncoder().encode(payload);
+}
+
+function mapUpstreamToClientErrorCode(f: AnthropicCallFailure): string {
+  if (f.status === 429) return "rate_limited";
+  if (f.status >= 500 && f.status < 600) return "upstream_unavailable";
+  if (f.status === 401) return "internal_error";
+  if (f.status === 400) return "invalid_request_upstream";
+  if (f.status === 0) return "network_error";
+  return "upstream_error";
 }
 
 // -----------------------------------------------------------------------------
@@ -193,7 +333,7 @@ export function makeHandler(deps: HandlerDeps) {
       return jsonResponse({ error: "method_not_allowed" }, 405);
     }
 
-    // Body-size guard voor alles.
+    // ---------- Pre-stream checks (HTTP-error op fail) ----------------------
     let bodyRead: BodyReadResult;
     try {
       bodyRead = await readBoundedBody(req, MAX_REQUEST_BODY_BYTES);
@@ -205,13 +345,11 @@ export function makeHandler(deps: HandlerDeps) {
       return jsonResponse({ error: "invalid_request" }, 400);
     }
 
-    // Auth
     const authHeader = req.headers.get("authorization") ?? "";
     const bearerMatch = /^Bearer\s+(\S+)\s*$/i.exec(authHeader);
     const jwt = bearerMatch ? bearerMatch[1] : "";
     if (!jwt) return jsonResponse({ error: "missing_authorization" }, 401);
 
-    // Parse + validate body
     let raw: unknown;
     try {
       raw = JSON.parse(new TextDecoder("utf-8").decode(bodyRead.bytes));
@@ -222,8 +360,6 @@ export function makeHandler(deps: HandlerDeps) {
     if (!parsed.success) return jsonResponse({ error: "invalid_request" }, 400);
     const input = parsed.data;
 
-    // Verify JWT — client wordt gemaakt MET de JWT als Authorization-header
-    // zodat latere .from()-calls onder de user's RLS-context lopen.
     let userClient: SupabaseClient;
     try {
       userClient = deps.makeUserClient(jwt);
@@ -252,16 +388,15 @@ export function makeHandler(deps: HandlerDeps) {
     }
     const userId = user.id;
 
-    // Anthropic key
     const apiKey = deps.getAnthropicApiKey();
     if (!apiKey) {
       console.error("[generate-patch] ANTHROPIC_API_KEY is missing from env");
       return jsonResponse({ error: "internal_error" }, 500);
     }
 
-    // Load doc under USER JWT — RLS controls access. Twee losse queries
-    // i.p.v. één PostgREST-embedded join zodat elke faalvorm een specifieke
-    // log krijgt en fk-resolutie geen bron van verwarring is.
+    // Doc-load onder USER JWT — RLS controls access. Twee losse SELECTs
+    // (project_documents → projects) i.p.v. embedded join, zodat elke
+    // faalvorm een specifieke log krijgt.
     let docRow: { doc: unknown; project_id: string; organization_id: string };
     try {
       const { data, error } = await userClient
@@ -320,7 +455,6 @@ export function makeHandler(deps: HandlerDeps) {
       return jsonResponse({ error: "internal_error" }, 500);
     }
 
-    // Admin client voor metrics-writes
     let admin: SupabaseClient;
     try {
       admin = deps.makeAdmin();
@@ -329,18 +463,12 @@ export function makeHandler(deps: HandlerDeps) {
       return jsonResponse({ error: "internal_error" }, 500);
     }
 
-    // -------------------------------------------------------------------------
-    // Sonnet router-call
-    // -------------------------------------------------------------------------
+    // ---------- Streaming response ------------------------------------------
     const systemPrompt = buildSystemPrompt(docRow.doc, input.selected_node_id);
-
-    const orchestratorModel = deps.getOrchestratorModel();
-    const specialistModel = deps.getSpecialistModel();
+    const orchestratorModel = deps.getOrchestratorModel() || DEFAULT_ORCHESTRATOR;
+    const specialistModel = deps.getSpecialistModel() || DEFAULT_SPECIALIST;
     const betaHeaders = deps.getBetaHeaders() ?? undefined;
 
-    // Bouw de messages-array: history (oudste eerst) + huidige user prompt.
-    // Multi-turn zorgt dat vervolgvragen zoals "iets kleiner" of "optie 2"
-    // context hebben. Zonder history: single-turn zoals voorheen.
     const historyMessages: AnthropicMessageInput[] = (input.history ?? []).map(
       (m) => ({ role: m.role, content: m.content }),
     );
@@ -349,145 +477,239 @@ export function makeHandler(deps: HandlerDeps) {
       { role: "user", content: input.prompt },
     ];
 
-    const routerResult = await deps.callAnthropic({
-      apiKey,
-      model: orchestratorModel,
-      system: systemPrompt,
-      systemCacheControl: true,
-      messages: routerMessages,
-      tools: ROUTER_TOOLS,
-      effort: "high",
-      betaHeaders,
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const emitEvent = (evt: ClientStreamEvent) => {
+          try {
+            controller.enqueue(sseEncode("activity", evt));
+          } catch { /* controller closed */ }
+        };
+        const emitTerminal = (t: ClientStreamTerminal) => {
+          try {
+            controller.enqueue(sseEncode(t.kind, t));
+          } catch { /* controller closed */ }
+        };
+
+        try {
+          // ---------------- Router call (Sonnet) ----------------------------
+          emitEvent({ kind: "model_change", model: orchestratorModel });
+
+          const routerStart = await deps.callAnthropicStream({
+            apiKey,
+            model: orchestratorModel,
+            system: systemPrompt,
+            systemCacheControl: true,
+            messages: routerMessages,
+            tools: ROUTER_TOOLS,
+            effort: "high",
+            betaHeaders,
+          });
+
+          if (!routerStart.ok) {
+            await insertMetric(
+              admin,
+              metricFromFailure(
+                {
+                  user_id: userId,
+                  organization_id: docRow.organization_id,
+                  provider: "anthropic",
+                  model: orchestratorModel,
+                  kind: "router",
+                  parent_call_id: null,
+                  route_reason: null,
+                  pricing_version: PRICING_VERSION,
+                },
+                routerStart,
+              ),
+            );
+            emitTerminal({
+              kind: "error",
+              code: mapUpstreamToClientErrorCode(routerStart),
+              message: routerStart.errorCode,
+            });
+            controller.close();
+            return;
+          }
+
+          const routerAcc = await consumeAnthropicStream(
+            routerStart.events,
+            emitEvent,
+            true,
+          );
+          const routerLatency = deps.now() - routerStart.startedAt;
+
+          const routerErrorCode = routerAcc.errorMessage
+            ? `stream_error:${routerAcc.errorMessage.slice(0, 60)}`
+            : null;
+          const routerMetricId = await insertMetric(
+            admin,
+            metricFromStream(
+              {
+                user_id: userId,
+                organization_id: docRow.organization_id,
+                provider: "anthropic",
+                model: orchestratorModel,
+                kind: "router",
+                parent_call_id: null,
+                route_reason: null,
+                pricing_version: PRICING_VERSION,
+              },
+              routerAcc.usage,
+              routerLatency,
+              routerStart.requestId,
+              routerErrorCode,
+            ),
+          );
+
+          if (routerAcc.errorMessage) {
+            emitTerminal({
+              kind: "error",
+              code: "upstream_stream_error",
+              message: routerAcc.errorMessage,
+            });
+            controller.close();
+            return;
+          }
+
+          // ---------------- Optional specialist call (Opus) -----------------
+          if (routerAcc.delegate) {
+            emitEvent({
+              kind: "delegate",
+              from: orchestratorModel,
+              to: specialistModel,
+              rationale: routerAcc.delegate.rationale,
+            });
+            emitEvent({ kind: "model_change", model: specialistModel });
+
+            const specialistMessages: AnthropicMessageInput[] = [
+              ...historyMessages,
+              { role: "user", content: routerAcc.delegate.enriched_prompt },
+            ];
+            const opusStart = await deps.callAnthropicStream({
+              apiKey,
+              model: specialistModel,
+              system: systemPrompt,
+              systemCacheControl: true,
+              messages: specialistMessages,
+              tools: SPECIALIST_TOOLS,
+              effort: "xhigh",
+              betaHeaders,
+            });
+
+            if (!opusStart.ok) {
+              await insertMetric(
+                admin,
+                metricFromFailure(
+                  {
+                    user_id: userId,
+                    organization_id: docRow.organization_id,
+                    provider: "anthropic",
+                    model: specialistModel,
+                    kind: "specialist",
+                    parent_call_id: routerMetricId,
+                    route_reason: routerAcc.delegate.rationale.slice(0, 500),
+                    pricing_version: PRICING_VERSION,
+                  },
+                  opusStart,
+                ),
+              );
+              emitTerminal({
+                kind: "error",
+                code: mapUpstreamToClientErrorCode(opusStart),
+                message: opusStart.errorCode,
+              });
+              controller.close();
+              return;
+            }
+
+            const opusAcc = await consumeAnthropicStream(
+              opusStart.events,
+              emitEvent,
+              false,
+            );
+            const opusLatency = deps.now() - opusStart.startedAt;
+            const opusErrorCode = opusAcc.errorMessage
+              ? `stream_error:${opusAcc.errorMessage.slice(0, 60)}`
+              : null;
+            await insertMetric(
+              admin,
+              metricFromStream(
+                {
+                  user_id: userId,
+                  organization_id: docRow.organization_id,
+                  provider: "anthropic",
+                  model: specialistModel,
+                  kind: "specialist",
+                  parent_call_id: routerMetricId,
+                  route_reason: routerAcc.delegate.rationale.slice(0, 500),
+                  pricing_version: PRICING_VERSION,
+                },
+                opusAcc.usage,
+                opusLatency,
+                opusStart.requestId,
+                opusErrorCode,
+              ),
+            );
+
+            if (opusAcc.errorMessage) {
+              emitTerminal({
+                kind: "error",
+                code: "upstream_stream_error",
+                message: opusAcc.errorMessage,
+              });
+              controller.close();
+              return;
+            }
+
+            const patches = toPatches(opusAcc.toolCalls);
+            emitTerminal({
+              kind: "done",
+              assistantMessage: opusAcc.text || routerAcc.text || "",
+              patches,
+            });
+            controller.close();
+            return;
+          }
+
+          // ---------------- No delegate: router-only ------------------------
+          const patches = toPatches(routerAcc.toolCalls);
+          emitTerminal({
+            kind: "done",
+            assistantMessage: routerAcc.text || "",
+            patches,
+          });
+          controller.close();
+        } catch (e) {
+          console.error("[generate-patch] stream orchestration threw:", e);
+          try {
+            controller.enqueue(
+              sseEncode("error", {
+                kind: "error",
+                code: "internal_error",
+                message: String(e).slice(0, 200),
+              }),
+            );
+          } catch { /* controller may be closed */ }
+          try { controller.close(); } catch { /* ignore */ }
+        }
+      },
+      cancel() {
+        // Client heeft de connectie afgebroken. Metrics zijn al gelogd voor
+        // wat de router-fase heeft opgeleverd; verdere calls stoppen we niet
+        // actief (Anthropic-request loopt door tot voltooiing). Voor v1
+        // accepteren we die overhead — een AbortController-chain toevoegen
+        // is aparte scope.
+      },
     });
 
-    const routerMetric = metricFromCall(
-      {
-        user_id: userId,
-        organization_id: docRow.organization_id,
-        provider: "anthropic",
-        model: orchestratorModel,
-        kind: "router",
-        parent_call_id: null,
-        route_reason: null,
-        pricing_version: PRICING_VERSION,
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        ...CORS_HEADERS,
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        "x-accel-buffering": "no",
       },
-      routerResult,
-    );
-    const routerMetricId = await insertMetric(admin, routerMetric);
-
-    if (!routerResult.ok) {
-      return jsonResponse({ error: mapAnthropicError(routerResult) }, routerResult.status === 429 ? 429 : 502);
-    }
-
-    // Verzamel tool-uses + tekst
-    const routerToolUses = extractToolUses(routerResult.response.content);
-    const routerText = extractAssistantText(routerResult.response.content);
-
-    // Zoek eventuele delegate-call
-    let delegate: { enriched_prompt: string; rationale: string } | null = null;
-    const directPatches: PatchOp[] = [];
-    for (const tu of routerToolUses) {
-      const conv = toolCallToPatch(tu.name, tu.input);
-      if (conv.kind === "delegate") {
-        delegate = { enriched_prompt: conv.enriched_prompt, rationale: conv.rationale };
-        break;
-      }
-      if (conv.kind === "patch") directPatches.push(conv.op);
-    }
-
-    // Als er GEEN delegate is: return de sonnet-uitkomst rechtstreeks.
-    if (!delegate) {
-      return jsonResponse(
-        {
-          assistantMessage: routerText || defaultAckIfEmpty(directPatches.length),
-          patches: directPatches,
-        },
-        200,
-      );
-    }
-
-    // -------------------------------------------------------------------------
-    // Opus specialist-call (na delegate)
-    // -------------------------------------------------------------------------
-    // Opus krijgt óók de history mee — de enriched_prompt is context van
-    // Sonnet's route-beslissing, maar Opus moet de eerdere dialoog kunnen
-    // zien om vervolgvragen ("die vorige suggestie, doe die") te begrijpen.
-    const specialistMessages: AnthropicMessageInput[] = [
-      ...historyMessages,
-      { role: "user", content: delegate.enriched_prompt },
-    ];
-    const specialistResult = await deps.callAnthropic({
-      apiKey,
-      model: specialistModel,
-      system: systemPrompt,
-      systemCacheControl: true,
-      messages: specialistMessages,
-      tools: SPECIALIST_TOOLS,
-      // "xhigh" wordt gebruikt voor de delegate-pad omdat de router expliciet
-      // heeft geoordeeld dat dit een zwaardere-quality-taak is.
-      effort: "xhigh",
-      betaHeaders,
     });
-
-    // Update de router-metric met de route_reason (nu we hem weten). We doen
-    // dit als aparte insert-fase — de tabel blokkeert updates (immutable).
-    // Alternatief: routeReason meteen bij de router-metric-insert zetten door
-    // de call-order om te draaien. Voor v1 accepteren we dat route_reason
-    // alleen op de specialist-rij staat.
-    const specialistMetric = metricFromCall(
-      {
-        user_id: userId,
-        organization_id: docRow.organization_id,
-        provider: "anthropic",
-        model: specialistModel,
-        kind: "specialist",
-        parent_call_id: routerMetricId,
-        route_reason: delegate.rationale.slice(0, 500),
-        pricing_version: PRICING_VERSION,
-      },
-      specialistResult,
-    );
-    await insertMetric(admin, specialistMetric);
-
-    if (!specialistResult.ok) {
-      return jsonResponse({ error: mapAnthropicError(specialistResult) }, specialistResult.status === 429 ? 429 : 502);
-    }
-
-    const specialistToolUses = extractToolUses(specialistResult.response.content);
-    const specialistText = extractAssistantText(specialistResult.response.content);
-
-    const specialistPatches: PatchOp[] = [];
-    for (const tu of specialistToolUses) {
-      const conv = toolCallToPatch(tu.name, tu.input);
-      // Opus mag NIET her-delegateren; als het toch delegate_to_opus emit't,
-      // negeren we dat en behandelen we het als "geen patches".
-      if (conv.kind === "patch") specialistPatches.push(conv.op);
-    }
-
-    return jsonResponse(
-      {
-        assistantMessage: specialistText || routerText || defaultAckIfEmpty(specialistPatches.length),
-        patches: specialistPatches,
-      },
-      200,
-    );
   };
-}
-
-// -----------------------------------------------------------------------------
-// Helpers
-// -----------------------------------------------------------------------------
-
-function mapAnthropicError(f: AnthropicCallFailure): string {
-  if (f.status === 429) return "rate_limited";
-  if (f.status >= 500 && f.status < 600) return "upstream_unavailable";
-  if (f.status === 401) return "internal_error"; // upstream-auth-issue = ons config-probleem
-  if (f.status === 400) return "invalid_request_upstream";
-  return "upstream_error";
-}
-
-function defaultAckIfEmpty(patchCount: number): string {
-  if (patchCount === 0) return "Ik heb nog geen wijziging kunnen bedenken voor deze vraag.";
-  if (patchCount === 1) return "Wijziging doorgevoerd.";
-  return `${patchCount} wijzigingen doorgevoerd.`;
 }

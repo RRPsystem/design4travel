@@ -1,14 +1,18 @@
 import { useEffect, useRef } from 'react';
 import { useChatStore } from '../../state/chatStore.js';
+import { LiveActivityFeed } from './LiveActivityFeed.js';
 
 export function MessageList() {
   const messages = useChatStore((s) => s.messages);
-  const busy = useChatStore((s) => s.busy);
+  const liveActive = useChatStore((s) => s.liveActivity !== null);
+  // Text-groei tijdens live streaming ook triggeren voor auto-scroll.
+  const liveTextLen = useChatStore((s) => s.liveActivity?.textSoFar.length ?? 0);
+  const liveToolCount = useChatStore((s) => s.liveActivity?.tools.length ?? 0);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages.length, busy]);
+  }, [messages.length, liveActive, liveTextLen, liveToolCount]);
 
   return (
     <div
@@ -40,11 +44,7 @@ export function MessageList() {
           {m.text}
         </div>
       ))}
-      {busy ? (
-        <div style={{ alignSelf: 'flex-start', color: '#6b7280', fontSize: 13, padding: '4px 8px' }}>
-          Bezig…
-        </div>
-      ) : null}
+      <LiveActivityFeed />
     </div>
   );
 }

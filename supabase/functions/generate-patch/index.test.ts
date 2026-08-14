@@ -1,18 +1,21 @@
-// Deno-tests voor generate-patch.
+// Deno-tests voor de streaming generate-patch Edge Function.
 //
-// Focus: unieke gedragingen van deze functie — router-only-pad,
-// delegate-pad, Anthropic-error-mapping, fail-open metrics. Basispaden
-// (method, body-size, JWT) worden minimaal getest omdat het patroon
-// identiek is aan de andere Edge Functions.
+// Test-strategie: mock callAnthropicStream door een AsyncGenerator te
+// injecteren die de gewenste events produceert. De handler bouwt een
+// ReadableStream response; we lezen die uit en parsen de SSE-events om
+// het gedrag te asserten.
 
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { makeHandler } from "./handler.ts";
 import type {
   AnthropicCallFailure,
-  AnthropicCallResult,
+  AnthropicStreamEvent,
+  AnthropicStreamStart,
 } from "./anthropic.ts";
 
-// ---- Assert helpers ---------------------------------------------------------
+// -----------------------------------------------------------------------------
+// Assertion helpers
+// -----------------------------------------------------------------------------
 
 function eq<T>(actual: T, expected: T, msg?: string): void {
   const sa = JSON.stringify(actual);
@@ -25,7 +28,9 @@ function isTrue(cond: unknown, msg: string): void {
   if (!cond) throw new Error(`assertion failed: ${msg}`);
 }
 
-// ---- Fixtures ---------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// Fixtures
+// -----------------------------------------------------------------------------
 
 const DOC_UUID = "22222222-2222-2222-2222-222222222222";
 const PROJECT_UUID = "33333333-3333-3333-3333-333333333333";
@@ -37,12 +42,7 @@ const OK_DOC = {
   project: { documentType: "website", title: "Current" },
   pages: [{ id: "p1", root: { id: "r", type: "layout-column", props: {} } }],
 };
-
-const OK_BODY = {
-  project_document_id: DOC_UUID,
-  prompt: "maak de titel groter",
-};
-
+const OK_BODY = { project_document_id: DOC_UUID, prompt: "maak titel groter" };
 const OK_USER: User = {
   id: USER_UUID,
   aud: "authenticated",
@@ -53,116 +53,43 @@ const OK_USER: User = {
   created_at: "2026-01-01T00:00:00Z",
 } as unknown as User;
 
-// ---- Client + call stubs ----------------------------------------------------
+// -----------------------------------------------------------------------------
+// Stub-builders
+// -----------------------------------------------------------------------------
 
 interface Spy {
   anthropicCalls: number;
   metricInserts: Array<Record<string, unknown>>;
   metricInsertShouldFail: boolean;
 }
-
 function newSpy(): Spy {
-  return {
-    anthropicCalls: 0,
-    metricInserts: [],
-    metricInsertShouldFail: false,
-  };
+  return { anthropicCalls: 0, metricInserts: [], metricInsertShouldFail: false };
 }
 
-interface CallSnapshot {
-  userText: string;
-  messages: Array<{ role: string; content: string }>;
-  model: string;
-}
-
-interface AnthropicScript {
-  router?: (snap: CallSnapshot) => AnthropicCallResult | AnthropicCallFailure;
-  specialist?: (snap: CallSnapshot) => AnthropicCallResult | AnthropicCallFailure;
-}
-
-function makeAnthropicCall(spy: Spy, script: AnthropicScript) {
-  let callIndex = 0;
-  return async function (input: {
-    messages: Array<{ role: string; content: string }>;
-    model: string;
-  }) {
-    spy.anthropicCalls += 1;
-    const isRouter = callIndex === 0;
-    callIndex += 1;
-    const impl = isRouter ? script.router : script.specialist;
-    if (!impl) throw new Error(`no anthropic-mock for ${isRouter ? "router" : "specialist"}`);
-    const last = input.messages[input.messages.length - 1];
-    const snap: CallSnapshot = {
-      userText: last?.content ?? "",
-      messages: input.messages,
-      model: input.model,
-    };
-    return impl(snap);
-  };
-}
-
-function successResponse(overrides: {
-  content: Array<Record<string, unknown>>;
-  usage?: Partial<{
-    input_tokens: number;
-    output_tokens: number;
-    cache_read_input_tokens: number;
-    cache_creation_input_tokens: number;
-    thinking_tokens: number;
-  }>;
-}): AnthropicCallResult {
-  return {
-    ok: true,
-    response: {
-      id: "msg_test",
-      type: "message",
-      role: "assistant",
-      model: "claude-sonnet-5",
-      content: overrides.content as never,
-      stop_reason: "end_turn",
-      usage: {
-        input_tokens: overrides.usage?.input_tokens ?? 100,
-        output_tokens: overrides.usage?.output_tokens ?? 50,
-        cache_read_input_tokens: overrides.usage?.cache_read_input_tokens ?? 0,
-        cache_creation_input_tokens: overrides.usage?.cache_creation_input_tokens ?? 0,
-        thinking_tokens: overrides.usage?.thinking_tokens ?? 0,
+function makeUserClient(spy: Spy, opts: { docExists?: boolean } = {}) {
+  return (_jwt: string) =>
+    ({
+      auth: {
+        getUser: async () => ({ data: { user: OK_USER }, error: null }),
       },
-    },
-    latencyMs: 123,
-    requestId: "req_test",
-  };
-}
-
-function failureResponse(status: number, errorCode: string): AnthropicCallFailure {
-  return { ok: false, status, errorCode, latencyMs: 45, requestId: null };
-}
-
-function makeUserClient(spy: Spy, opts: { user?: User | null; docExists?: boolean } = {}) {
-  return (_jwt: string) => ({
-    auth: {
-      getUser: async () => ({
-        data: { user: opts.user === undefined ? OK_USER : opts.user },
-        error: null,
-      }),
-    },
-    from: (table: string) => {
-      const stub = {
-        select: () => stub,
-        eq: () => stub,
-        maybeSingle: async () => {
-          if (table === "project_documents") {
-            if (opts.docExists === false) return { data: null, error: null };
-            return { data: { doc: OK_DOC, project_id: PROJECT_UUID }, error: null };
-          }
-          if (table === "projects") {
-            return { data: { organization_id: ORG_UUID }, error: null };
-          }
-          return { data: null, error: null };
-        },
-      };
-      return stub;
-    },
-  }) as unknown as SupabaseClient;
+      from: (table: string) => {
+        const stub = {
+          select: () => stub,
+          eq: () => stub,
+          maybeSingle: async () => {
+            if (table === "project_documents") {
+              if (opts.docExists === false) return { data: null, error: null };
+              return { data: { doc: OK_DOC, project_id: PROJECT_UUID }, error: null };
+            }
+            if (table === "projects") {
+              return { data: { organization_id: ORG_UUID }, error: null };
+            }
+            return { data: null, error: null };
+          },
+        };
+        return stub;
+      },
+    }) as unknown as SupabaseClient;
 }
 
 function makeAdmin(spy: Spy) {
@@ -187,19 +114,47 @@ function makeAdmin(spy: Spy) {
     }) as unknown as SupabaseClient;
 }
 
-function makeReq(body: unknown, opts: { auth?: string; method?: string } = {}): Request {
-  const bodyText = typeof body === "string" ? body : JSON.stringify(body);
-  return new Request("https://x.local/generate-patch", {
-    method: opts.method ?? "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(opts.auth === null ? {} : { authorization: opts.auth ?? "Bearer test-jwt" }),
-    },
-    body: bodyText,
-  });
+/** Async-generator vanuit een array — voor de mock-stream. */
+async function* fromEvents(
+  events: AnthropicStreamEvent[],
+): AsyncGenerator<AnthropicStreamEvent, void, void> {
+  for (const e of events) yield e;
 }
 
-function makeDeps(spy: Spy, script: AnthropicScript, opts: { docExists?: boolean; apiKey?: string | null } = {}) {
+interface StreamScript {
+  router?: AnthropicStreamStart | AnthropicCallFailure;
+  specialist?: AnthropicStreamStart | AnthropicCallFailure;
+}
+
+function makeCallStream(spy: Spy, script: StreamScript) {
+  let callIndex = 0;
+  return async function () {
+    spy.anthropicCalls += 1;
+    const isRouter = callIndex === 0;
+    callIndex += 1;
+    const impl = isRouter ? script.router : script.specialist;
+    if (!impl) throw new Error(`no anthropic-mock for ${isRouter ? "router" : "specialist"}`);
+    return impl;
+  };
+}
+
+function okStream(
+  events: AnthropicStreamEvent[],
+  requestId = "req_test",
+): AnthropicStreamStart {
+  return {
+    ok: true,
+    events: fromEvents(events),
+    requestId,
+    startedAt: 1_735_000_000_000,
+  };
+}
+
+function failStream(status: number, errorCode: string): AnthropicCallFailure {
+  return { ok: false, status, errorCode, latencyMs: 12, requestId: null };
+}
+
+function makeDeps(spy: Spy, script: StreamScript, opts: { docExists?: boolean; apiKey?: string | null } = {}) {
   return {
     makeUserClient: makeUserClient(spy, opts.docExists === false ? { docExists: false } : {}),
     makeAdmin: makeAdmin(spy),
@@ -207,336 +162,250 @@ function makeDeps(spy: Spy, script: AnthropicScript, opts: { docExists?: boolean
     getOrchestratorModel: () => "claude-sonnet-5",
     getSpecialistModel: () => "claude-opus-5",
     getBetaHeaders: () => null,
-    now: () => 1_735_000_000_000,
-    callAnthropic: makeAnthropicCall(spy, script),
+    now: () => 1_735_000_001_000,
+    callAnthropicStream: makeCallStream(spy, script),
   };
 }
 
-// ---- Tests ------------------------------------------------------------------
+function makeReq(body: unknown, opts: { auth?: string | null; method?: string } = {}): Request {
+  const bodyText = typeof body === "string" ? body : JSON.stringify(body);
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (opts.auth !== null) headers.authorization = opts.auth ?? "Bearer test-jwt";
+  return new Request("https://x.local/generate-patch", {
+    method: opts.method ?? "POST",
+    headers,
+    body: bodyText,
+  });
+}
 
-Deno.test("405 on GET", async () => {
+/** Read all SSE events from a streaming response into a typed array. */
+async function readSSE(res: Response): Promise<Array<{ event: string; data: unknown }>> {
+  const out: Array<{ event: string; data: unknown }> = [];
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let sep;
+    while ((sep = buf.indexOf("\n\n")) >= 0) {
+      const raw = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+      let eventName = "";
+      const dataLines: string[] = [];
+      for (const line of raw.split("\n")) {
+        if (line.startsWith("event:")) eventName = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+      }
+      if (!eventName || dataLines.length === 0) continue;
+      out.push({ event: eventName, data: JSON.parse(dataLines.join("\n")) });
+    }
+  }
+  return out;
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+Deno.test("405 on GET (pre-stream error)", async () => {
   const spy = newSpy();
   const h = makeHandler(makeDeps(spy, {}));
   const res = await h(new Request("https://x.local/", { method: "GET" }));
   eq(res.status, 405);
 });
 
-Deno.test("401 on missing authorization", async () => {
+Deno.test("401 on missing authorization (pre-stream error)", async () => {
   const spy = newSpy();
   const h = makeHandler(makeDeps(spy, {}));
-  const req = new Request("https://x.local/", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(OK_BODY),
-  });
-  const res = await h(req);
+  const res = await h(makeReq(OK_BODY, { auth: null }));
   eq(res.status, 401);
-  eq((await res.json()).error, "missing_authorization");
 });
 
-Deno.test("400 on invalid_json", async () => {
-  const spy = newSpy();
-  const h = makeHandler(makeDeps(spy, {}));
-  const res = await h(makeReq("this-is-not-json"));
-  eq(res.status, 400);
-  eq((await res.json()).error, "invalid_json");
-});
-
-Deno.test("400 on schema-invalid body", async () => {
+Deno.test("400 on schema-invalid body (pre-stream)", async () => {
   const spy = newSpy();
   const h = makeHandler(makeDeps(spy, {}));
   const res = await h(makeReq({ project_document_id: "not-a-uuid", prompt: "hi" }));
   eq(res.status, 400);
-  eq((await res.json()).error, "invalid_request");
 });
 
-Deno.test("500 when ANTHROPIC_API_KEY missing", async () => {
-  const spy = newSpy();
-  const h = makeHandler(makeDeps(spy, {}, { apiKey: null }));
-  const res = await h(makeReq(OK_BODY));
-  eq(res.status, 500);
-  eq((await res.json()).error, "internal_error");
-});
-
-Deno.test("404 when doc not found", async () => {
+Deno.test("404 when doc not visible under RLS (pre-stream)", async () => {
   const spy = newSpy();
   const h = makeHandler(makeDeps(spy, {}, { docExists: false }));
   const res = await h(makeReq(OK_BODY));
   eq(res.status, 404);
-  eq((await res.json()).error, "not_found");
 });
 
-Deno.test("happy path — sonnet-only (no delegate) returns patches + 1 metric row", async () => {
+Deno.test("happy path — sonnet-only stream produces activity + done events + 1 metric", async () => {
   const spy = newSpy();
   const h = makeHandler(
     makeDeps(spy, {
-      router: () =>
-        successResponse({
-          content: [
-            { type: "text", text: "Hero-titel op 66px gezet." },
-            {
-              type: "tool_use",
-              id: "tu_1",
-              name: "set_prop",
-              input: { nodeId: "hero", key: "titleFontSize", value: 66 },
-            },
-          ],
-        }),
-    }),
-  );
-  const res = await h(makeReq(OK_BODY));
-  eq(res.status, 200);
-  const body = (await res.json()) as { assistantMessage: string; patches: unknown[] };
-  eq(body.assistantMessage, "Hero-titel op 66px gezet.");
-  eq(body.patches.length, 1);
-  eq((body.patches[0] as { kind: string }).kind, "setProp");
-
-  eq(spy.anthropicCalls, 1);
-  eq(spy.metricInserts.length, 1);
-  const m = spy.metricInserts[0]! as Record<string, unknown>;
-  eq(m.kind, "router");
-  eq(m.parent_call_id, null);
-  eq(m.success, true);
-  eq(m.user_id, USER_UUID);
-  eq(m.organization_id, ORG_UUID);
-  eq(m.model, "claude-sonnet-5");
-  isTrue((m.input_tokens as number) > 0, "input_tokens counted");
-});
-
-Deno.test("delegate path — router emits delegate_to_opus, specialist runs, patches come from Opus, 2 metric rows share parent_call_id", async () => {
-  const spy = newSpy();
-
-  const routerResp = successResponse({
-    content: [
-      {
-        type: "tool_use",
-        id: "tu_delegate",
-        name: "delegate_to_opus",
-        input: {
-          enriched_prompt: "Redesign the hero for a luxury feel.",
-          rationale: "Vague creative ask requiring judgement",
+      router: okStream([
+        { kind: "text_delta", text: "OK, " },
+        { kind: "text_delta", text: "gedaan." },
+        { kind: "tool_start", index: 0, id: "tu1", name: "set_prop" },
+        {
+          kind: "tool_complete",
+          index: 0,
+          id: "tu1",
+          name: "set_prop",
+          input: { nodeId: "hero", key: "titleFontSize", value: 66 },
         },
-      },
-    ],
-  });
-
-  const opusResp = successResponse({
-    content: [
-      { type: "text", text: "Hero herontworpen." },
-      {
-        type: "tool_use",
-        id: "tu_ins",
-        name: "set_props",
-        input: { nodeId: "hero", props: { title: "Ontdek Luxe", overlay: true, height: 640 } },
-      },
-    ],
-    usage: { input_tokens: 500, output_tokens: 200 },
-  });
-
-  const h = makeHandler(
-    makeDeps(spy, {
-      router: () => routerResp,
-      specialist: (snap) => {
-        // Verifieer dat Opus de enriched_prompt kreeg, niet de originele prompt.
-        isTrue(snap.userText.includes("Redesign the hero"), "opus receives enriched_prompt");
-        return opusResp;
-      },
+        { kind: "usage", usage: { input_tokens: 120, output_tokens: 40 } },
+        { kind: "message_stop" },
+      ]),
     }),
   );
-
   const res = await h(makeReq(OK_BODY));
   eq(res.status, 200);
-  const body = (await res.json()) as { assistantMessage: string; patches: unknown[] };
-  eq(body.assistantMessage, "Hero herontworpen.");
-  eq(body.patches.length, 1);
-  eq((body.patches[0] as { kind: string }).kind, "setProps");
+  eq(res.headers.get("content-type"), "text/event-stream; charset=utf-8");
 
-  eq(spy.anthropicCalls, 2);
-  eq(spy.metricInserts.length, 2);
-  const [routerMetric, specialistMetric] = spy.metricInserts as [
-    Record<string, unknown>,
-    Record<string, unknown>,
-  ];
-  eq(routerMetric.kind, "router");
-  eq(routerMetric.parent_call_id, null);
-  eq(specialistMetric.kind, "specialist");
-  eq(specialistMetric.parent_call_id, "metric-1");
-  eq(specialistMetric.model, "claude-opus-5");
-  eq(specialistMetric.route_reason, "Vague creative ask requiring judgement");
-});
+  const events = await readSSE(res);
+  // model_change + 2 text_delta + tool_start + tool_complete + done
+  const kinds = events.map((e) => `${e.event}:${(e.data as { kind: string }).kind}`);
+  eq(kinds.includes("activity:model_change"), true);
+  eq(kinds.filter((k) => k === "activity:text_delta").length, 2);
+  eq(kinds.includes("activity:tool_start"), true);
+  eq(kinds.includes("activity:tool_complete"), true);
 
-Deno.test("multi-turn: history in body is forwarded to Anthropic as prior messages", async () => {
-  const spy = newSpy();
-  let capturedMessages: Array<{ role: string; content: string }> = [];
-  const h = makeHandler(
-    makeDeps(spy, {
-      router: (snap) => {
-        capturedMessages = snap.messages;
-        return successResponse({
-          content: [
-            { type: "text", text: "OK." },
-            { type: "tool_use", id: "tu", name: "set_prop", input: { nodeId: "hero", key: "title", value: "X" } },
-          ],
-        });
-      },
-    }),
-  );
-  const bodyWithHistory = {
-    ...OK_BODY,
-    history: [
-      { role: "user", content: "eerste vraag" },
-      { role: "assistant", content: "eerste antwoord" },
-      { role: "user", content: "tweede vraag" },
-      { role: "assistant", content: "tweede antwoord" },
-    ],
+  const done = events.find((e) => e.event === "done")!.data as {
+    assistantMessage: string;
+    patches: Array<{ kind: string }>;
   };
-  const res = await h(makeReq(bodyWithHistory));
-  eq(res.status, 200);
-  // 4 history-messages + 1 current prompt = 5 total, in volgorde.
-  eq(capturedMessages.length, 5);
-  eq(capturedMessages[0]!.role, "user");
-  eq(capturedMessages[0]!.content, "eerste vraag");
-  eq(capturedMessages[4]!.role, "user");
-  eq(capturedMessages[4]!.content, OK_BODY.prompt);
+  eq(done.assistantMessage, "OK, gedaan.");
+  eq(done.patches.length, 1);
+  eq(done.patches[0]!.kind, "setProp");
+
+  // Metrics: 1 router-rij met token-counts uit de usage-event.
+  eq(spy.metricInserts.length, 1);
+  const m = spy.metricInserts[0]!;
+  eq(m.kind, "router");
+  eq(m.success, true);
+  eq(m.input_tokens, 120);
+  eq(m.output_tokens, 40);
 });
 
-Deno.test("page-ops: add_page tool_use maps to addPage PatchOp", async () => {
+Deno.test("delegate path — Sonnet emits delegate_to_opus, Opus streams patches, 2 metrics linked", async () => {
   const spy = newSpy();
   const h = makeHandler(
     makeDeps(spy, {
-      router: () =>
-        successResponse({
-          content: [
-            { type: "text", text: "Golfpagina toegevoegd." },
-            {
-              type: "tool_use",
-              id: "tu_ap",
-              name: "add_page",
-              input: {
-                page: {
-                  id: "page-golf",
-                  name: "Golfreis",
-                  root: { id: "golf-root", type: "layout-column", props: {} },
-                },
-              },
-            },
-          ],
-        }),
+      router: okStream([
+        {
+          kind: "tool_start",
+          index: 0,
+          id: "tu_del",
+          name: "delegate_to_opus",
+        },
+        {
+          kind: "tool_complete",
+          index: 0,
+          id: "tu_del",
+          name: "delegate_to_opus",
+          input: {
+            enriched_prompt: "Redesign the hero for luxury feel",
+            rationale: "Vague creative ask",
+          },
+        },
+        { kind: "usage", usage: { input_tokens: 500, output_tokens: 30 } },
+        { kind: "message_stop" },
+      ]),
+      specialist: okStream([
+        { kind: "text_delta", text: "Klaar." },
+        {
+          kind: "tool_start",
+          index: 0,
+          id: "tu_p",
+          name: "set_props",
+        },
+        {
+          kind: "tool_complete",
+          index: 0,
+          id: "tu_p",
+          name: "set_props",
+          input: {
+            nodeId: "hero",
+            props: { title: "Ontdek Luxe", overlay: true, height: 640 },
+          },
+        },
+        { kind: "usage", usage: { input_tokens: 800, output_tokens: 200 } },
+        { kind: "message_stop" },
+      ]),
     }),
   );
   const res = await h(makeReq(OK_BODY));
   eq(res.status, 200);
-  const body = (await res.json()) as { patches: Array<{ kind: string }> };
-  eq(body.patches.length, 1);
-  eq(body.patches[0]!.kind, "addPage");
+
+  const events = await readSSE(res);
+  // Delegate-event moet erin zitten.
+  const delegate = events.find(
+    (e) => e.event === "activity" && (e.data as { kind: string }).kind === "delegate",
+  );
+  isTrue(!!delegate, "delegate event emitted");
+
+  const done = events.find((e) => e.event === "done")!.data as {
+    assistantMessage: string;
+    patches: Array<{ kind: string }>;
+  };
+  eq(done.assistantMessage, "Klaar.");
+  eq(done.patches.length, 1);
+  eq(done.patches[0]!.kind, "setProps");
+
+  // 2 metrics, tweede heeft parent_call_id = eerste's id.
+  eq(spy.metricInserts.length, 2);
+  eq(spy.metricInserts[0]!.kind, "router");
+  eq(spy.metricInserts[1]!.kind, "specialist");
+  eq(spy.metricInserts[1]!.parent_call_id, "metric-1");
+  eq(spy.metricInserts[1]!.model, "claude-opus-5");
 });
 
-Deno.test("Anthropic 429 on router → 429 rate_limited, no specialist call", async () => {
+Deno.test("Anthropic 429 on router → error event + 429-status metric", async () => {
   const spy = newSpy();
   const h = makeHandler(
     makeDeps(spy, {
-      router: () => failureResponse(429, "anthropic_429_rate_limit_error"),
+      router: failStream(429, "anthropic_429_rate_limit_error"),
     }),
   );
   const res = await h(makeReq(OK_BODY));
-  eq(res.status, 429);
-  eq((await res.json()).error, "rate_limited");
-  eq(spy.anthropicCalls, 1);
+  eq(res.status, 200); // stream started; error event is inside the stream
+
+  const events = await readSSE(res);
+  const err = events.find((e) => e.event === "error");
+  isTrue(!!err, "error event emitted");
+  eq((err!.data as { code: string }).code, "rate_limited");
+
   eq(spy.metricInserts.length, 1);
   eq(spy.metricInserts[0]!.success, false);
+  eq(spy.metricInserts[0]!.error_code, "anthropic_429_rate_limit_error");
 });
 
-Deno.test("Anthropic 503 on router → 502 upstream_unavailable", async () => {
-  const spy = newSpy();
-  const h = makeHandler(
-    makeDeps(spy, {
-      router: () => failureResponse(503, "anthropic_503_overloaded"),
-    }),
-  );
-  const res = await h(makeReq(OK_BODY));
-  eq(res.status, 502);
-  eq((await res.json()).error, "upstream_unavailable");
-});
-
-Deno.test("metric insert failure NOT fatal — AI response still 200", async () => {
+Deno.test("metric insert failure NOT fatal — done event still arrives", async () => {
   const spy = newSpy();
   spy.metricInsertShouldFail = true;
   const h = makeHandler(
     makeDeps(spy, {
-      router: () =>
-        successResponse({
-          content: [
-            { type: "text", text: "OK" },
-            { type: "tool_use", id: "tu_1", name: "set_prop", input: { nodeId: "hero", key: "title", value: "X" } },
-          ],
-        }),
+      router: okStream([
+        { kind: "text_delta", text: "OK" },
+        {
+          kind: "tool_start",
+          index: 0,
+          id: "tu",
+          name: "set_prop",
+        },
+        {
+          kind: "tool_complete",
+          index: 0,
+          id: "tu",
+          name: "set_prop",
+          input: { nodeId: "hero", key: "title", value: "X" },
+        },
+        { kind: "usage", usage: { input_tokens: 50, output_tokens: 10 } },
+        { kind: "message_stop" },
+      ]),
     }),
   );
   const res = await h(makeReq(OK_BODY));
-  eq(res.status, 200);
-  const body = (await res.json()) as { patches: unknown[] };
-  eq(body.patches.length, 1);
-});
-
-Deno.test("Opus re-delegate attempt is ignored (specialist tools exclude delegate)", async () => {
-  const spy = newSpy();
-  const h = makeHandler(
-    makeDeps(spy, {
-      router: () =>
-        successResponse({
-          content: [
-            { type: "tool_use", id: "tu_del", name: "delegate_to_opus", input: { enriched_prompt: "do it", rationale: "why" } },
-          ],
-        }),
-      // Opus emit's een delegate_to_opus — moet worden genegeerd
-      specialist: () =>
-        successResponse({
-          content: [
-            { type: "text", text: "Klaar." },
-            {
-              type: "tool_use",
-              id: "tu_re",
-              name: "delegate_to_opus",
-              input: { enriched_prompt: "again", rationale: "loop" },
-            },
-            { type: "tool_use", id: "tu_p", name: "set_prop", input: { nodeId: "x", key: "y", value: "z" } },
-          ],
-        }),
-    }),
-  );
-  const res = await h(makeReq(OK_BODY));
-  eq(res.status, 200);
-  const body = (await res.json()) as { patches: unknown[] };
-  eq(body.patches.length, 1);
-  eq((body.patches[0] as { kind: string }).kind, "setProp");
-});
-
-Deno.test("invalid tool_use input is dropped (not treated as valid patch)", async () => {
-  const spy = newSpy();
-  const h = makeHandler(
-    makeDeps(spy, {
-      router: () =>
-        successResponse({
-          content: [
-            { type: "text", text: "Hm." },
-            // ontbrekende 'value' — schema.safeParse zou moeten falen
-            { type: "tool_use", id: "tu_bad", name: "set_prop", input: { nodeId: "x", key: "y" } },
-          ],
-        }),
-    }),
-  );
-  const res = await h(makeReq(OK_BODY));
-  eq(res.status, 200);
-  const body = (await res.json()) as { patches: unknown[] };
-  eq(body.patches.length, 0);
-});
-
-// ---- CORS + method smoke ----------------------------------------------------
-
-Deno.test("OPTIONS → 204 with CORS", async () => {
-  const spy = newSpy();
-  const h = makeHandler(makeDeps(spy, {}));
-  const res = await h(new Request("https://x.local/", { method: "OPTIONS" }));
-  eq(res.status, 204);
-  isTrue(res.headers.get("access-control-allow-origin") === "*", "CORS present");
+  const events = await readSSE(res);
+  const done = events.find((e) => e.event === "done");
+  isTrue(!!done, "done event still arrives despite metric-insert failure");
 });

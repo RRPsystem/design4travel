@@ -11,7 +11,7 @@ import {
   useDesignDocStore,
 } from './state/designDocStore.js';
 import { useAuthStore } from './state/authStore.js';
-import { supabase } from './adapters/supabase/client.js';
+import { supabase, supabaseAnonKey, supabaseUrl } from './adapters/supabase/client.js';
 import { createSupabasePersistenceAdapter } from './adapters/persistence/supabase.js';
 import {
   bootstrapDocument,
@@ -101,6 +101,8 @@ function AuthedApp() {
         new ClaudeAIAdapter({
           client: supabase,
           projectDocumentId: result.projectDocumentId,
+          supabaseUrl,
+          supabaseAnonKey,
         }),
       );
       // Autosave-gate: attach ALS ALLERLAATSTE — pas nu mogen mutaties fires.

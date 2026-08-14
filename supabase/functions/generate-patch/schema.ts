@@ -410,3 +410,88 @@ const TOOL_NAME_TO_OP_KIND: Readonly<Record<string, PatchOp["kind"]>> = Object.f
   rename_page: "renamePage",
   reorder_pages: "reorderPages",
 });
+
+// -----------------------------------------------------------------------------
+// Client-facing SSE-events (van Edge Function naar browser)
+// -----------------------------------------------------------------------------
+
+/**
+ * Genormaliseerde event-shapes die de Edge Function als SSE naar de client
+ * stuurt. Elk event hoort te corresponderen met een echte upstream-gebeurtenis
+ * (Anthropic stream-event of onze eigen route-beslissing). NOOIT fake events
+ * voor UX-fluff — zie project-no-fake-ux memory.
+ */
+export type ClientStreamEvent =
+  /** Actief model gewisseld (initieel router-model, na delegate → specialist). */
+  | { kind: "model_change"; model: string }
+  /** Text-delta uit de assistant-message. Client concatteert. */
+  | { kind: "text_delta"; text: string }
+  /** Nieuwe tool_use-call gestart bij Anthropic. Naam bekend, args nog niet volledig. */
+  | { kind: "tool_start"; index: number; tool: string }
+  /** Tool_use-call volledig binnen. Summary is een korte NL-omschrijving. */
+  | { kind: "tool_complete"; index: number; tool: string; summary: string }
+  /**
+   * Router-model heeft delegate_to_opus geëmit'ed en de Edge Function gaat
+   * nu Opus starten. Client kan een visuele transitie tonen.
+   */
+  | { kind: "delegate"; from: string; to: string; rationale: string };
+
+/**
+ * Terminale events die de stream afsluiten.
+ */
+export type ClientStreamTerminal =
+  | {
+      kind: "done";
+      assistantMessage: string;
+      patches: PatchOp[];
+    }
+  | {
+      kind: "error";
+      code: string;
+      message: string;
+    };
+
+/**
+ * Bouw een NL-summary voor een tool_use-call op basis van naam + input.
+ * Gebruikt voor de live-feed UI. Nooit fake — komt uit de daadwerkelijke
+ * Anthropic-payload zodra de tool_use volledig binnen is.
+ */
+export function summarizeToolCall(name: string, input: Record<string, unknown>): string {
+  const s = (v: unknown, max = 40): string => {
+    if (v === undefined || v === null) return "";
+    const str = typeof v === "string" ? v : JSON.stringify(v);
+    return str.length > max ? str.slice(0, max - 1) + "…" : str;
+  };
+  switch (name) {
+    case "set_prop":
+      return `${s(input.nodeId, 20)}.${s(input.key, 20)} = ${s(input.value)}`;
+    case "set_props":
+      return `${s(input.nodeId, 20)}: ${Object.keys((input.props as object) ?? {}).join(", ")}`;
+    case "set_bind":
+      return `${s(input.nodeId, 20)}.${s(input.key, 20)} → ${s(input.path)}`;
+    case "reorder_children":
+      return `children van ${s(input.parentId, 30)} herordenen`;
+    case "insert_node": {
+      const node = (input.node as { id?: string; type?: string }) ?? {};
+      return `${s(node.type, 20)} '${s(node.id, 24)}' toevoegen in ${s(input.parentId, 20)}`;
+    }
+    case "remove_node":
+      return `${s(input.nodeId, 30)} verwijderen`;
+    case "set_brand_token":
+      return `${s(input.key, 20)} = ${s(input.value, 20)}`;
+    case "add_page": {
+      const page = (input.page as { id?: string; name?: string }) ?? {};
+      return `pagina '${s(page.id, 24)}'${page.name ? ` (${s(page.name, 20)})` : ""}`;
+    }
+    case "remove_page":
+      return `pagina ${s(input.pageId, 30)} verwijderen`;
+    case "rename_page":
+      return `${s(input.pageId, 20)} → '${s(input.name, 20)}'`;
+    case "reorder_pages":
+      return `pagina's herordenen`;
+    case "delegate_to_opus":
+      return s(input.rationale, 80);
+    default:
+      return name;
+  }
+}

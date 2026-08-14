@@ -29,11 +29,19 @@ export function useChatController() {
       const historyBefore = buildHistory(useChatStore.getState().messages);
       append({ role: 'user', text: trimmed });
       setBusy(true);
+      // Init live-activity BEFORE de call. Model wordt initieel op '?' gezet —
+      // het echte model komt binnen als eerste event (model_change). Zolang
+      // dat er nog niet is, toont de UI een neutrale "denkt na..." zonder
+      // model-label. Zodra Anthropic's stream begint volgt de echte model-naam.
+      useChatStore.getState().startLive('');
       try {
         const { doc, selectedNodeId } = useDesignDocStore.getState();
         const response = await getAI().generatePatch(
           { doc, selectedNodeId, history: historyBefore },
           trimmed,
+          (evt) => {
+            useChatStore.getState().liveEvent(evt);
+          },
         );
         if (response.patches.length > 0) {
           useDesignDocStore.getState().applyOps(response.patches);
@@ -42,6 +50,7 @@ export function useChatController() {
       } catch (e) {
         append({ role: 'assistant', text: `Er ging iets mis: ${String(e)}` });
       } finally {
+        useChatStore.getState().endLive();
         setBusy(false);
       }
     },
