@@ -30,8 +30,14 @@ export function isLockVersionMismatch(e: unknown): e is LockVersionMismatchError
 
 interface SupabasePersistenceOptions {
   client: SupabaseClient;
-  /** UUID uit bootstrap — save-document schrijft per project, niet per doc. */
-  projectId: string;
+  /**
+   * project_documents.id (UUID). Wordt gebruikt als save-document body-key
+   * (document_id) én als key voor de snapshot-RPC.
+   *
+   * Post-multi-doc (migratie 0014-0016): de save-document Edge Function
+   * accepteert document_id direct — geen server-side lookup meer nodig.
+   */
+  projectDocumentId: string;
   /** Schema-versie zoals aan de backend vastgehouden — meestal SCHEMA_VERSION. */
   schemaVersion: string;
   /** Leeft in designDocStore. Wordt vlak voor iedere save uitgelezen. */
@@ -47,7 +53,7 @@ interface SaveResponse {
 export function createSupabasePersistenceAdapter(
   opts: SupabasePersistenceOptions,
 ): PersistenceAdapter {
-  const { client, projectId, schemaVersion, getExpectedLockVersion, onLockVersionUpdate } =
+  const { client, projectDocumentId, schemaVersion, getExpectedLockVersion, onLockVersionUpdate } =
     opts;
 
   return {
@@ -77,7 +83,7 @@ export function createSupabasePersistenceAdapter(
     async save(docId, doc) {
       const expected = getExpectedLockVersion();
       const res = await invokeEdge<SaveResponse>(client, 'save-document', {
-        project_id: projectId,
+        document_id: projectDocumentId,
         doc,
         schema_version: schemaVersion,
         expected_lock_version: expected,

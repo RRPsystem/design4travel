@@ -7,7 +7,6 @@ import {
   LockVersionMismatchError,
 } from './supabase.js';
 
-const PROJECT_ID = '11111111-1111-1111-1111-111111111111';
 const DOC_ID = '22222222-2222-2222-2222-222222222222';
 
 function makeDoc(): DesignDoc {
@@ -72,7 +71,7 @@ describe('SupabasePersistenceAdapter — save', () => {
     const onUpdate = vi.fn();
     const adapter = createSupabasePersistenceAdapter({
       client,
-      projectId: PROJECT_ID,
+      projectDocumentId: DOC_ID,
       schemaVersion: SCHEMA_VERSION,
       getExpectedLockVersion: () => 3,
       onLockVersionUpdate: onUpdate,
@@ -86,7 +85,7 @@ describe('SupabasePersistenceAdapter — save', () => {
     });
     expect(invoke).toHaveBeenCalledWith('save-document', {
       body: {
-        project_id: PROJECT_ID,
+        document_id: DOC_ID,
         doc,
         schema_version: SCHEMA_VERSION,
         expected_lock_version: 3,
@@ -110,7 +109,7 @@ describe('SupabasePersistenceAdapter — save', () => {
     const onUpdate = vi.fn();
     const adapter = createSupabasePersistenceAdapter({
       client,
-      projectId: PROJECT_ID,
+      projectDocumentId: DOC_ID,
       schemaVersion: SCHEMA_VERSION,
       getExpectedLockVersion: () => 3,
       onLockVersionUpdate: onUpdate,
@@ -141,7 +140,7 @@ describe('SupabasePersistenceAdapter — save', () => {
     const onUpdate = vi.fn();
     const adapter = createSupabasePersistenceAdapter({
       client,
-      projectId: PROJECT_ID,
+      projectDocumentId: DOC_ID,
       schemaVersion: SCHEMA_VERSION,
       getExpectedLockVersion: () => 3,
       onLockVersionUpdate: onUpdate,
@@ -158,7 +157,7 @@ describe('SupabasePersistenceAdapter — save', () => {
     const onUpdate = vi.fn();
     const adapter = createSupabasePersistenceAdapter({
       client,
-      projectId: PROJECT_ID,
+      projectDocumentId: DOC_ID,
       schemaVersion: SCHEMA_VERSION,
       getExpectedLockVersion: () => 4,
       onLockVersionUpdate: onUpdate,
@@ -175,7 +174,7 @@ describe('SupabasePersistenceAdapter — save', () => {
     });
     const adapter = createSupabasePersistenceAdapter({
       client,
-      projectId: PROJECT_ID,
+      projectDocumentId: DOC_ID,
       schemaVersion: SCHEMA_VERSION,
       getExpectedLockVersion: () => 1,
       onLockVersionUpdate: vi.fn(),
@@ -192,7 +191,7 @@ describe('SupabasePersistenceAdapter — load', () => {
     });
     const adapter = createSupabasePersistenceAdapter({
       client,
-      projectId: PROJECT_ID,
+      projectDocumentId: DOC_ID,
       schemaVersion: SCHEMA_VERSION,
       getExpectedLockVersion: () => 1,
       onLockVersionUpdate: vi.fn(),
@@ -205,7 +204,7 @@ describe('SupabasePersistenceAdapter — load', () => {
     const { client } = makeClient({ loadResult: { data: null, error: null } });
     const adapter = createSupabasePersistenceAdapter({
       client,
-      projectId: PROJECT_ID,
+      projectDocumentId: DOC_ID,
       schemaVersion: SCHEMA_VERSION,
       getExpectedLockVersion: () => 1,
       onLockVersionUpdate: vi.fn(),
@@ -219,7 +218,7 @@ describe('SupabasePersistenceAdapter — delete', () => {
     const { client } = makeClient({});
     const adapter = createSupabasePersistenceAdapter({
       client,
-      projectId: PROJECT_ID,
+      projectDocumentId: DOC_ID,
       schemaVersion: SCHEMA_VERSION,
       getExpectedLockVersion: () => 1,
       onLockVersionUpdate: vi.fn(),
