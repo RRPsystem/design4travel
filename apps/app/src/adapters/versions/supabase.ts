@@ -60,9 +60,12 @@ export function createSupabaseVersionHistoryAdapter(
 
   return {
     async list(projectDocumentId) {
+      // `author_label` staat WEL in de mock + het VersionSummary-interface
+      // (optioneel), maar NIET in de daadwerkelijke DB-tabel — die heeft
+      // alleen author_id + author_note. Selecteren zou 42703 geven.
       const { data, error } = await client
         .from('project_document_versions')
-        .select('version_number, created_at, author_id, author_label, author_note')
+        .select('version_number, created_at, author_id, author_note')
         .eq('project_document_id', projectDocumentId)
         .order('version_number', { ascending: false });
       if (error) {
@@ -72,14 +75,12 @@ export function createSupabaseVersionHistoryAdapter(
         version_number: number;
         created_at: string;
         author_id: string | null;
-        author_label: string | null;
         author_note: string | null;
       }>;
       return rows.map<VersionSummary>((r) => ({
         version_number: r.version_number,
         created_at: r.created_at,
         ...(r.author_id !== null ? { author_id: r.author_id } : {}),
-        ...(r.author_label !== null ? { author_label: r.author_label } : {}),
         ...(r.author_note !== null ? { author_note: r.author_note } : {}),
       }));
     },
@@ -87,7 +88,7 @@ export function createSupabaseVersionHistoryAdapter(
     async get(projectDocumentId, versionNumber) {
       const { data, error } = await client
         .from('project_document_versions')
-        .select('version_number, created_at, author_id, author_label, author_note, doc')
+        .select('version_number, created_at, author_id, author_note, doc')
         .eq('project_document_id', projectDocumentId)
         .eq('version_number', versionNumber)
         .maybeSingle();
@@ -99,7 +100,6 @@ export function createSupabaseVersionHistoryAdapter(
         version_number: number;
         created_at: string;
         author_id: string | null;
-        author_label: string | null;
         author_note: string | null;
         doc: unknown;
       };
@@ -119,7 +119,6 @@ export function createSupabaseVersionHistoryAdapter(
         created_at: row.created_at,
         doc: parsed.data as DesignDoc,
         ...(row.author_id !== null ? { author_id: row.author_id } : {}),
-        ...(row.author_label !== null ? { author_label: row.author_label } : {}),
         ...(row.author_note !== null ? { author_note: row.author_note } : {}),
       };
       return snap;

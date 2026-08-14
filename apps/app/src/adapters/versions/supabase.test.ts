@@ -65,9 +65,9 @@ describe('SupabaseVersionHistoryAdapter — list', () => {
     const { client } = makeClient({
       fromResult: {
         data: [
-          { version_number: 3, created_at: '2026-01-03T00:00:00Z', author_id: null, author_label: null, author_note: null },
-          { version_number: 2, created_at: '2026-01-02T00:00:00Z', author_id: null, author_label: null, author_note: null },
-          { version_number: 1, created_at: '2026-01-01T00:00:00Z', author_id: null, author_label: null, author_note: null },
+          { version_number: 3, created_at: '2026-01-03T00:00:00Z', author_id: null, author_note: null },
+          { version_number: 2, created_at: '2026-01-02T00:00:00Z', author_id: null, author_note: null },
+          { version_number: 1, created_at: '2026-01-01T00:00:00Z', author_id: null, author_note: null },
         ],
         error: null,
       },
@@ -105,7 +105,6 @@ describe('SupabaseVersionHistoryAdapter — get', () => {
           version_number: 5,
           created_at: '2026-01-05T00:00:00Z',
           author_id: null,
-          author_label: null,
           author_note: null,
           doc: persisted,
         },
