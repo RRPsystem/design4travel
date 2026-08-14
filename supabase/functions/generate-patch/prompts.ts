@@ -112,6 +112,30 @@ Discipline:
 - Nooit \`doc.id\`, \`doc.version\`, \`doc.meta\`, of \`page.id\` aanraken. Voor "hernoem pagina" gebruik rename_page (past .name aan).
 - Bij insert_node in een nieuwe pagina: eerst add_page, dán insert_node met de nieuwe page's root-id als parentId.
 - Voor \`reorder_children\` moet order een PERMUTATIE zijn van de bestaande child-ids — geen duplicaten, geen missing, geen extra.
+
+VOORBEELDEN
+
+❌ SLECHT — invention zonder tool_use:
+  User: "Maak een complete golfpagina voor onze premium reisagent-doelgroep."
+  Doc-state: pages = [page-1 (Home)]
+  Slecht antwoord: "De golfpagina bestaat trouwens al compleet: hero met golf-foto, bestemmingen-blok met Algarve/Schotland/Mauritius..."
+  Waarom slecht: page-golf staat NIET in de doc-state; hero-foto/Algarve/etc. zijn verzonnen. Geen tool_use = geen actie.
+
+✅ GOED — delegate voor volle pagina:
+  Zelfde user-prompt + doc-state.
+  Goed antwoord:
+    [tool_use: delegate_to_opus met enriched_prompt="Bouw een nieuwe pagina 'page-golf' (Golfreis) voor premium reisagent-doelgroep. Bestaande pagina's: page-1. Nog niet aanwezig: page-golf. Brand-tokens: brand.primary=#4f46e5, brand.accent=#f97316. Rustige/luxe stijl passend bij premium reisagent. Bevat: hero met golf-imagery + pakkende titel, minimaal twee content-secties, duidelijke CTA." rationale="Volledige pagina-generatie met creatieve invulling"]
+    Text: "Ik zet 'm door naar Opus voor de volle uitbouw."
+
+✅ OOK GOED — direct zelf bouwen:
+  Zelfde user-prompt.
+  Goed antwoord:
+    [tool_use: add_page met page={id:'page-golf', name:'Golfreis', root:{id:'golf-root', type:'layout-column', props:{gap:48, padding:0}}}]
+    [tool_use: insert_node parentId='golf-root' index=0 node=<hero met golf-titel + subtitel + imagery-url>]
+    [tool_use: insert_node parentId='golf-root' index=1 node=<layout-column sectie 'Bestemmingen' met heading + text>]
+    [tool_use: insert_node parentId='golf-root' index=2 node=<layout-column sectie 'Waarom bij ons' met heading + text>]
+    [tool_use: insert_node parentId='golf-root' index=3 node=<cta 'Plan je golfreis'>]
+    Text: "Golfpagina toegevoegd met hero, twee content-secties en een CTA."
 `.trim();
 
 const DELEGATION_POLICY = `
@@ -199,16 +223,43 @@ function buildDocSummary(docJson: unknown): string {
 }
 
 /**
- * Build the full system prompt from the doc snapshot. Deterministic given
- * the same doc, so cache_control on this text works across calls in a
- * session (until the doc changes materially).
+ * Build the full system prompt from the doc snapshot.
+ *
+ * Volgorde is bewust:
+ *   1. PERSONALITY + policies eerst (stabiel — deel is cache_control-baar).
+ *   2. Doc-state ALS LAATSTE, dichtbij de user-prompt in Claude's attention.
+ *      Sonnet 5 verankert zich sterker aan wat er onderaan de system prompt
+ *      staat en aan wat de user als laatste zegt; de doc-state daar zetten
+ *      + omkaderen met een expliciete "trust dit boven je eigen eerdere
+ *      antwoorden" bestrijdt poisoned-history-hallucinatie.
  */
 export function buildSystemPrompt(docJson: unknown, selectedNodeId?: string): string {
   const docSummary = buildDocSummary(docJson);
-  const docBlock = `CURRENT DOCUMENT — FULL JSON (also the source of truth, aligned with the SUMMARY above):\n\`\`\`json\n${JSON.stringify(docJson, null, 2)}\n\`\`\``;
+  const docBlock = `CURRENT DOCUMENT — FULL JSON (matches SUMMARY above):\n\`\`\`json\n${JSON.stringify(docJson, null, 2)}\n\`\`\``;
   const selection = selectedNodeId
-    ? `SELECTED NODE (user last clicked this in the canvas):\n  ${selectedNodeId}\n\nWhen the user says "this" / "dit" / "deze" / "hier" and there is a selected node, prefer that node as the target.`
-    : "No node currently selected. The user's request likely refers to specific nodes by name or type, or to the page as a whole.";
+    ? `SELECTED NODE: ${selectedNodeId}\nWhen the user says "this" / "dit" / "deze" / "hier", prefer that node as the target.`
+    : "SELECTED NODE: (none) — the user's request likely refers to specific nodes by id or type, or to a page as a whole.";
+
+  const authoritativeStateBlock = `
+<authoritative_document_state>
+Dit blok is de ENIGE bron van waarheid over de doc-state op dit moment.
+Alles wat hier NIET in staat, bestaat NIET.
+
+⚠️ POISONED-HISTORY BESCHERMING
+Als iets in de chat-geschiedenis (jouw eigen eerdere antwoorden) suggereert dat er
+meer bestaat dan wat hier staat, is dat een FOUT uit een eerdere turn.
+Vertrouw dit blok, NIET je eigen memory.
+
+Als je vorige turn zei "de golfpagina bestaat al" en die staat niet hieronder:
+dan zat je toen fout. Erken het (kort) en bouw hem NU alsnog via tools.
+
+${docSummary}
+
+${docBlock}
+
+${selection}
+</authoritative_document_state>
+`.trim();
 
   return [
     PERSONALITY,
@@ -223,10 +274,6 @@ export function buildSystemPrompt(docJson: unknown, selectedNodeId?: string): st
     "",
     DELEGATION_POLICY,
     "",
-    docSummary,
-    "",
-    docBlock,
-    "",
-    selection,
+    authoritativeStateBlock,
   ].join("\n");
 }
