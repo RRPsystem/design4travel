@@ -25,6 +25,7 @@ function isTrue(cond: unknown, msg: string): void {
 
 // ---- Test fixtures -----------------------------------------------------
 const OK_PROJECT_UUID = "22222222-2222-2222-2222-222222222222";
+const OK_DOC_UUID = "33333333-3333-3333-3333-333333333333";
 const OK_USER_UUID = "44444444-4444-4444-4444-444444444444";
 
 const OK_DOC = {
@@ -34,6 +35,15 @@ const OK_DOC = {
 };
 const OK_BODY = {
   project_id: OK_PROJECT_UUID,
+  doc: OK_DOC,
+  schema_version: "0.1.0",
+  expected_lock_version: 1,
+};
+
+// Nieuwe body-vorm na multi-doc migratie (0014-0016). Sturt document_id
+// direct in plaats van project_id → skip'd de legacy lookup-step.
+const OK_BODY_V2 = {
+  document_id: OK_DOC_UUID,
   doc: OK_DOC,
   schema_version: "0.1.0",
   expected_lock_version: 1,
@@ -68,6 +78,12 @@ interface StubOpts {
   rpcThrows?: () => never;
   makeUserClientThrows?: boolean;
   makeAdminThrows?: boolean;
+  /**
+   * Result van `admin.from('project_documents').select('id').eq('project_id', X)`
+   * op de legacy project_id-lookup-pad. Default: exact 1 rij zodat de meeste
+   * bestaande tests (die project_id sturen) blijven werken.
+   */
+  lookupResult?: () => Promise<{ data: unknown; error: unknown }>;
 }
 
 function makeDeps(opts: StubOpts) {
@@ -90,7 +106,19 @@ function makeDeps(opts: StubOpts) {
     makeAdmin(): SupabaseClient {
       opts.spy.makeAdminCalls += 1;
       if (opts.makeAdminThrows) throw new Error("stub_make_admin");
+      // `from()` wordt aangeroepen in het legacy project_id-pad om het (enige)
+      // doc-id op te zoeken. Default: 1 rij met OK_DOC_UUID. Tests die 0/>1
+      // of een error willen simuleren zetten opts.lookupResult.
+      const lookupTerminal = opts.lookupResult
+        ? opts.lookupResult()
+        : Promise.resolve({ data: [{ id: OK_DOC_UUID }], error: null });
+      const lookupChain = {
+        select: () => lookupChain,
+        eq: () => lookupChain,
+        then: (fn: (r: unknown) => unknown) => lookupTerminal.then(fn),
+      };
       const client = {
+        from: (_table: string) => lookupChain,
         rpc: async (name: string, params: Record<string, unknown>) => {
           opts.spy.rpcCalls.push({ name, params });
           if (opts.rpcThrows) opts.rpcThrows();
@@ -659,7 +687,7 @@ Deno.test("handler: makeAdmin throws → 500", async () => {
 // ============================================================
 // 9) Handler — RPC call shape + happy path + errors
 // ============================================================
-Deno.test("handler: happy path → 200, actor from JWT, params correct", async () => {
+Deno.test("handler: happy path (legacy project_id) → lookup+v2 RPC, actor from JWT", async () => {
   const spy = newSpy();
   const h = makeHandler(makeDeps({
     spy,
@@ -670,11 +698,80 @@ Deno.test("handler: happy path → 200, actor from JWT, params correct", async (
   eq(res.status, 200);
   eq(await bodyOf(res), { new_lock_version: 2 });
   eq(spy.rpcCalls.length, 1);
-  eq(spy.rpcCalls[0].name, "save_document_internal");
+  eq(spy.rpcCalls[0].name, "save_document_v2_internal");
   eq(spy.rpcCalls[0].params.p_actor_user_id, OK_USER_UUID);
-  eq(spy.rpcCalls[0].params.p_project_id, OK_PROJECT_UUID);
+  // Legacy project_id-pad haalt document_id op via lookup en stuurt DIE naar de RPC.
+  eq(spy.rpcCalls[0].params.p_document_id, OK_DOC_UUID);
   eq(spy.rpcCalls[0].params.p_schema_version, "0.1.0");
   eq(spy.rpcCalls[0].params.p_expected_lock_version, 1);
+});
+
+Deno.test("handler: happy path (nieuw document_id) → geen lookup, direct v2 RPC", async () => {
+  const spy = newSpy();
+  const h = makeHandler(makeDeps({
+    spy,
+    getUserResult: async () => ({ data: { user: mkUser() }, error: null }),
+    rpcResult: async () => ({ data: 5, error: null }),
+  }));
+  const res = await h(postReq(OK_BODY_V2));
+  eq(res.status, 200);
+  eq(await bodyOf(res), { new_lock_version: 5 });
+  eq(spy.rpcCalls[0].name, "save_document_v2_internal");
+  eq(spy.rpcCalls[0].params.p_document_id, OK_DOC_UUID);
+});
+
+Deno.test("handler: body met ZOWEL project_id ALS document_id → 400 invalid_request", async () => {
+  const spy = newSpy();
+  const h = makeHandler(makeDeps({
+    spy,
+    getUserResult: async () => ({ data: { user: mkUser() }, error: null }),
+  }));
+  const res = await h(postReq({
+    ...OK_BODY,
+    document_id: OK_DOC_UUID,
+  }));
+  eq(res.status, 400);
+  eq((await bodyOf(res)).error, "invalid_request");
+});
+
+Deno.test("handler: body met noch project_id noch document_id → 400 invalid_request", async () => {
+  const spy = newSpy();
+  const h = makeHandler(makeDeps({ spy }));
+  const { project_id: _pid, ...rest } = OK_BODY;
+  void _pid;
+  const res = await h(postReq(rest));
+  eq(res.status, 400);
+  eq((await bodyOf(res)).error, "invalid_request");
+});
+
+Deno.test("handler: legacy project_id met 0 matchende docs → 404 document_not_found", async () => {
+  const spy = newSpy();
+  const h = makeHandler(makeDeps({
+    spy,
+    getUserResult: async () => ({ data: { user: mkUser() }, error: null }),
+    lookupResult: async () => ({ data: [], error: null }),
+  }));
+  const res = await h(postReq(OK_BODY));
+  eq(res.status, 404);
+  eq((await bodyOf(res)).error, "document_not_found");
+  // Geen RPC-call want lookup gaf niks.
+  eq(spy.rpcCalls.length, 0);
+});
+
+Deno.test("handler: legacy project_id met >1 matchende docs → 400 ambiguous_document", async () => {
+  const spy = newSpy();
+  const h = makeHandler(makeDeps({
+    spy,
+    getUserResult: async () => ({ data: { user: mkUser() }, error: null }),
+    lookupResult: async () => ({
+      data: [{ id: OK_DOC_UUID }, { id: "44444444-4444-4444-4444-444444444445" }],
+      error: null,
+    }),
+  }));
+  const res = await h(postReq(OK_BODY));
+  eq(res.status, 400);
+  eq((await bodyOf(res)).error, "ambiguous_document");
+  eq(spy.rpcCalls.length, 0);
 });
 
 Deno.test("handler: RPC error lock_version_mismatch → 409", async () => {

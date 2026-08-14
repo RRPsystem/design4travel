@@ -39,15 +39,31 @@ const DocSchema = z.object({
   pages: z.array(z.unknown()).min(1),
 }).passthrough();
 
-export const SaveRequestSchema = z.object({
-  project_id: z.string().uuid(),
-  doc: DocSchema,
-  schema_version: z.string().min(1).max(64),
-  // Must be ≥ 1 — lock_version is initialised to 1 in project_documents and
-  // only ever incremented. A zero here means the client never loaded the
-  // document, which is a client bug we surface as 400 rather than 500.
-  expected_lock_version: z.number().int().min(1).max(PG_INT_MAX),
-}).strict();
+// Body accepteert nu ÓFWEL document_id (preferred, na multi-doc migratie
+// 0014-0016) ÓFWEL project_id (legacy, blijft werken zolang het project
+// exact 1 doc heeft). Precies één van beide moet aanwezig zijn — beide
+// tegelijk = ambigu = 400.
+//
+// Frontend-adapters die nog project_id sturen worden hierdoor niet gebroken
+// door deze deploy. Nadat de frontend migreert naar document_id kan de
+// legacy-tak in een latere revisie verwijderd worden.
+export const SaveRequestSchema = z
+  .object({
+    project_id: z.string().uuid().optional(),
+    document_id: z.string().uuid().optional(),
+    doc: DocSchema,
+    schema_version: z.string().min(1).max(64),
+    // Must be ≥ 1 — lock_version is initialised to 1 in project_documents and
+    // only ever incremented. A zero here means the client never loaded the
+    // document, which is a client bug we surface as 400 rather than 500.
+    expected_lock_version: z.number().int().min(1).max(PG_INT_MAX),
+  })
+  .strict()
+  .refine(
+    (body) =>
+      (body.project_id !== undefined) !== (body.document_id !== undefined),
+    { message: "exactly one of project_id or document_id is required" },
+  );
 export type SaveRequest = z.infer<typeof SaveRequestSchema>;
 
 export const SaveResponseSchema = z.object({

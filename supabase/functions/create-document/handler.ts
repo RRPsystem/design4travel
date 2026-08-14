@@ -1,11 +1,11 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import {
   CORS_HEADERS,
+  CreateRequestSchema,
+  CreateResponseSchema,
   jsonResponse,
   MAX_REQUEST_BODY_BYTES,
   mapRpcError,
-  PG_INT_MAX,
-  SaveRequestSchema,
 } from "./schema.ts";
 
 export interface HandlerDeps {
@@ -23,18 +23,11 @@ async function readBoundedBody(
 ): Promise<BodyReadResult> {
   const clHeader = req.headers.get("content-length");
   if (clHeader !== null) {
-    // Strict: "0" or a non-zero digit sequence only. Rejects whitespace,
-    // leading zeros, signs, decimal points, and comma-joined multi-headers.
-    if (!/^(?:0|[1-9][0-9]*)$/.test(clHeader)) {
-      return { ok: false, reason: "malformed_length" };
-    }
+    if (!/^(?:0|[1-9][0-9]*)$/.test(clHeader)) return { ok: false, reason: "malformed_length" };
     const cl = Number(clHeader);
-    if (!Number.isSafeInteger(cl) || cl < 0) {
-      return { ok: false, reason: "malformed_length" };
-    }
+    if (!Number.isSafeInteger(cl) || cl < 0) return { ok: false, reason: "malformed_length" };
     if (cl > maxBytes) return { ok: false, reason: "too_large" };
   }
-
   const body = req.body;
   if (body === null) return { ok: true, bytes: new Uint8Array(0) };
 
@@ -47,25 +40,18 @@ async function readBoundedBody(
       if (done) break;
       total += value.byteLength;
       if (total > maxBytes) {
-        try {
-          await reader.cancel();
-        } catch { /* stream may already be closed */ }
+        try { await reader.cancel(); } catch { /* ignore */ }
         return { ok: false, reason: "too_large" };
       }
       chunks.push(value);
     }
   } finally {
-    try {
-      reader.releaseLock();
-    } catch { /* ignore */ }
+    try { reader.releaseLock(); } catch { /* ignore */ }
   }
 
   const buf = new Uint8Array(total);
   let off = 0;
-  for (const c of chunks) {
-    buf.set(c, off);
-    off += c.byteLength;
-  }
+  for (const c of chunks) { buf.set(c, off); off += c.byteLength; }
   return { ok: true, bytes: buf };
 }
 
@@ -78,8 +64,9 @@ export function makeHandler(deps: HandlerDeps) {
       return jsonResponse({ error: "method_not_allowed" }, 405);
     }
 
-    // Body-size guard runs BEFORE auth-header extraction, deps construction,
-    // and any downstream work. A 413 or 400 here never touches the network.
+    // Body-size guard runs BEFORE auth-header extraction. A 413 or 400 here
+    // never touches the network. The try/catch fail-closes any unexpected
+    // body-stream rejection to 500 with our contract body + CORS.
     let bodyRead: BodyReadResult;
     try {
       bodyRead = await readBoundedBody(req, MAX_REQUEST_BODY_BYTES);
@@ -87,9 +74,7 @@ export function makeHandler(deps: HandlerDeps) {
       return jsonResponse({ error: "internal_error" }, 500);
     }
     if (!bodyRead.ok) {
-      if (bodyRead.reason === "too_large") {
-        return jsonResponse({ error: "payload_too_large" }, 413);
-      }
+      if (bodyRead.reason === "too_large") return jsonResponse({ error: "payload_too_large" }, 413);
       return jsonResponse({ error: "invalid_request" }, 400);
     }
 
@@ -100,12 +85,11 @@ export function makeHandler(deps: HandlerDeps) {
 
     let raw: unknown;
     try {
-      const text = new TextDecoder("utf-8").decode(bodyRead.bytes);
-      raw = JSON.parse(text);
+      raw = JSON.parse(new TextDecoder("utf-8").decode(bodyRead.bytes));
     } catch {
       return jsonResponse({ error: "invalid_json" }, 400);
     }
-    const parsed = SaveRequestSchema.safeParse(raw);
+    const parsed = CreateRequestSchema.safeParse(raw);
     if (!parsed.success) return jsonResponse({ error: "invalid_request" }, 400);
     const input = parsed.data;
 
@@ -144,50 +128,15 @@ export function makeHandler(deps: HandlerDeps) {
       return jsonResponse({ error: "internal_error" }, 500);
     }
 
-    // Bepaal het target-document-id. Twee paden:
-    //   (a) body heeft `document_id` → direct pad naar v2 RPC.
-    //   (b) body heeft `project_id` (legacy) → lookup het (enige) doc van dat
-    //       project. Als 0 of >1 docs bestaan: 400. Dit pad blijft werken
-    //       voor pre-migratie-frontends; nieuwe frontends sturen document_id.
-    let documentId: string;
-    if (input.document_id !== undefined) {
-      documentId = input.document_id;
-    } else if (input.project_id !== undefined) {
-      let lookup: { data: unknown; error: unknown };
-      try {
-        lookup = (await admin
-          .from("project_documents")
-          .select("id")
-          .eq("project_id", input.project_id)) as {
-            data: unknown;
-            error: unknown;
-          };
-      } catch {
-        return jsonResponse({ error: "internal_error" }, 500);
-      }
-      if (lookup.error) return jsonResponse({ error: "internal_error" }, 500);
-      const rows = (lookup.data ?? []) as Array<{ id: string }>;
-      if (rows.length === 0) {
-        return jsonResponse({ error: "document_not_found" }, 404);
-      }
-      if (rows.length > 1) {
-        // Project heeft meerdere docs; frontend moet document_id sturen.
-        return jsonResponse({ error: "ambiguous_document" }, 400);
-      }
-      documentId = rows[0]!.id;
-    } else {
-      // Zod-refine had dit al moeten pakken; defence-in-depth.
-      return jsonResponse({ error: "invalid_request" }, 400);
-    }
-
     let rpcResult: { data: unknown; error: unknown };
     try {
-      rpcResult = (await admin.rpc("save_document_v2_internal", {
+      rpcResult = (await admin.rpc("create_project_document", {
         p_actor_user_id: actorUserId,
-        p_document_id: documentId,
-        p_doc: input.doc,
+        p_project_id: input.project_id,
+        p_document_type: input.document_type,
+        p_title: input.title,
+        p_seed_doc: input.seed_doc,
         p_schema_version: input.schema_version,
-        p_expected_lock_version: input.expected_lock_version,
       })) as { data: unknown; error: unknown };
     } catch {
       return jsonResponse({ error: "internal_error" }, 500);
@@ -198,17 +147,16 @@ export function makeHandler(deps: HandlerDeps) {
       return jsonResponse(mapped.body, mapped.status);
     }
 
-    // save_document_internal returns integer (scalar) — supabase-js gives
-    // the value directly, not wrapped in an array.
-    if (typeof rpcResult.data !== "number") {
+    // TABLE-returning function → supabase-js gives us an array of row objects.
+    if (!Array.isArray(rpcResult.data)) {
       return jsonResponse({ error: "internal_error" }, 500);
     }
-    if (!Number.isSafeInteger(rpcResult.data)) {
+    if (rpcResult.data.length !== 1) {
       return jsonResponse({ error: "internal_error" }, 500);
     }
-    if (rpcResult.data < 1 || rpcResult.data > PG_INT_MAX) {
-      return jsonResponse({ error: "internal_error" }, 500);
-    }
-    return jsonResponse({ new_lock_version: rpcResult.data }, 200);
+    const row = CreateResponseSchema.safeParse(rpcResult.data[0]);
+    if (!row.success) return jsonResponse({ error: "internal_error" }, 500);
+
+    return jsonResponse(row.data, 200);
   };
 }
