@@ -61,7 +61,7 @@ function makeClient(opts: {
 }
 
 describe('SupabaseVersionHistoryAdapter — list', () => {
-  it('returns summaries newest-first', async () => {
+  it('returns summaries newest-first and queries project_document_versions', async () => {
     const { client } = makeClient({
       fromResult: {
         data: [
@@ -80,6 +80,8 @@ describe('SupabaseVersionHistoryAdapter — list', () => {
     expect(list.map((v) => v.version_number)).toEqual([3, 2, 1]);
     // null author fields worden weggelaten in de summary (optional)
     expect(list[0]).not.toHaveProperty('author_id');
+    // Regressie-guard: tabelnaam moet overeenkomen met migration 0002.
+    expect(client.from).toHaveBeenCalledWith('project_document_versions');
   });
 
   it('throws when the query errors', async () => {

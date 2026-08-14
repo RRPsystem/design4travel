@@ -49,7 +49,7 @@ function toRollbackCode(code: string | undefined): RollbackErrorCode {
 
 /**
  * Supabase-backed VersionHistoryAdapter.
- * - list/get lopen direct via RLS-select op `document_versions` (leeg-resultaat
+ * - list/get lopen direct via RLS-select op `project_document_versions` (leeg-resultaat
  *   op onbekende ID is de RLS-invulling, geen expliciete `not_found`).
  * - rollback loopt via de bestaande `rollback-document` Edge Function (A3.2).
  */
@@ -61,7 +61,7 @@ export function createSupabaseVersionHistoryAdapter(
   return {
     async list(projectDocumentId) {
       const { data, error } = await client
-        .from('document_versions')
+        .from('project_document_versions')
         .select('version_number, created_at, author_id, author_label, author_note')
         .eq('project_document_id', projectDocumentId)
         .order('version_number', { ascending: false });
@@ -86,7 +86,7 @@ export function createSupabaseVersionHistoryAdapter(
 
     async get(projectDocumentId, versionNumber) {
       const { data, error } = await client
-        .from('document_versions')
+        .from('project_document_versions')
         .select('version_number, created_at, author_id, author_label, author_note, doc')
         .eq('project_document_id', projectDocumentId)
         .eq('version_number', versionNumber)
