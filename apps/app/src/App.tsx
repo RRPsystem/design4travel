@@ -18,6 +18,8 @@ import {
   type BootstrapResult,
 } from './adapters/persistence/bootstrap.js';
 import { createSupabaseVersionHistoryAdapter } from './adapters/versions/supabase.js';
+import { ClaudeAIAdapter } from './adapters/ai/claudeAI.js';
+import { attachAI } from './adapters/ai/registry.js';
 import { seedLandingPage } from './seed/mockLandingPage.js';
 
 export function App() {
@@ -91,6 +93,16 @@ function AuthedApp() {
       });
 
       attachVersions(versions);
+      // Attach AI-adapter voordat de user prompts kan sturen (chat is direct
+      // beschikbaar zodra AuthedApp rendert). Zonder attach zou getAI() de
+      // MockAIAdapter teruggeven en zou de chat lokaal-pattern-matchen i.p.v.
+      // via de Edge Function te lopen.
+      attachAI(
+        new ClaudeAIAdapter({
+          client: supabase,
+          projectDocumentId: result.projectDocumentId,
+        }),
+      );
       // Autosave-gate: attach ALS ALLERLAATSTE — pas nu mogen mutaties fires.
       attachPersistence(persistence);
       setVersionsAdapter(versions);

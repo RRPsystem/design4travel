@@ -1,9 +1,7 @@
 import { useCallback, useMemo } from 'react';
-import { MockAIAdapter } from '../../adapters/ai/mockAI.js';
+import { getAI } from '../../adapters/ai/registry.js';
 import { useChatStore } from '../../state/chatStore.js';
 import { useDesignDocStore } from '../../state/designDocStore.js';
-
-const ai = new MockAIAdapter();
 
 export function useChatController() {
   const busy = useChatStore((s) => s.busy);
@@ -18,7 +16,7 @@ export function useChatController() {
       setBusy(true);
       try {
         const { doc, selectedNodeId } = useDesignDocStore.getState();
-        const response = await ai.generatePatch({ doc, selectedNodeId }, trimmed);
+        const response = await getAI().generatePatch({ doc, selectedNodeId }, trimmed);
         if (response.patches.length > 0) {
           useDesignDocStore.getState().applyOps(response.patches);
         }
