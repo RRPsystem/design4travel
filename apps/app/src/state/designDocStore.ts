@@ -65,8 +65,30 @@ export function attachPersistence(adapter: PersistenceAdapter) {
   persistence = adapter;
 }
 
+/**
+ * Bewust GEEN noopPersistence-alternatief — dat zou stille wegflowering van
+ * changes betekenen terwijl de UI nog "Opgeslagen" toont. `null` + de
+ * scheduleSave-guard is expliciet en veilig.
+ *
+ * Cancel eventuele debounce-timer meteen zodat er geen lopende callback meer
+ * kan fires. En als toch een callback het net vóór clearTimeout heeft
+ * uitgevoerd: de capture-closure in scheduleSave check't `persistence ===
+ * captured` en zal skippen — geen save-lek naar een volgende adapter.
+ */
+export function detachPersistence() {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  persistence = null;
+}
+
 export function attachVersions(adapter: VersionHistoryAdapter) {
   versionsAdapter = adapter;
+}
+
+export function detachVersions() {
+  versionsAdapter = null;
 }
 
 /**
@@ -81,6 +103,10 @@ export function attachVersionSink(sink: (doc: DesignDoc) => VersionSummary) {
   versionSink = sink;
 }
 
+export function detachVersionSink() {
+  versionSink = null;
+}
+
 function scheduleSave(doc: DesignDoc, setState: (s: Partial<State>) => void) {
   if (!persistence) return;
   // Absorberend: eenmaal in lock-conflict tot rebase/reload — nooit doorvloeien
@@ -88,9 +114,17 @@ function scheduleSave(doc: DesignDoc, setState: (s: Partial<State>) => void) {
   if (useDesignDocStore.getState().saveState === 'lock-conflict') return;
   if (saveTimer) clearTimeout(saveTimer);
   setState({ saveState: 'saving' });
+  // Capture de HUIDIGE adapter-referentie. Als er tussen nu en het aflopen
+  // van de debounce-timer een detachPersistence() of attachPersistence(other)
+  // gebeurt, mag deze pending save NIET meer fires — anders schrijven we doc A
+  // naar adapter B (data-lek tussen documenten). De closure-check onderaan
+  // vangt dat: als `persistence !== captured`, skip de save-poging.
+  const captured = persistence;
   saveTimer = setTimeout(async () => {
+    if (persistence !== captured) return;
     try {
-      await persistence!.save(doc.id, doc);
+      await captured.save(doc.id, doc);
+      if (persistence !== captured) return;
       if (versionSink) {
         const summary = versionSink(doc);
         setState({ saveState: 'saved', currentLockVersion: summary.version_number });
@@ -98,6 +132,9 @@ function scheduleSave(doc: DesignDoc, setState: (s: Partial<State>) => void) {
         setState({ saveState: 'saved' });
       }
     } catch (e) {
+      // Bij een fout in een STALE-adapter-save: negeer geluidloos. De fout
+      // gaat over een oud document; de UI hoort daar niet meer op te reageren.
+      if (persistence !== captured) return;
       if (isLockVersionMismatch(e)) {
         setState({
           saveState: 'lock-conflict',

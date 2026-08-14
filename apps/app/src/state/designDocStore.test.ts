@@ -4,6 +4,7 @@ import {
   attachPersistence,
   attachVersions,
   attachVersionSink,
+  detachPersistence,
   useDesignDocStore,
 } from './designDocStore.js';
 import { createMockVersionHistoryAdapter } from '../adapters/versions/mock.js';
@@ -164,5 +165,86 @@ describe('designDocStore — version history integration', () => {
     // Bij een lege ops-array laat applyPatches het document ongewijzigd,
     // maar de store zet `previewingVersion` alsnog op null.
     expect(useDesignDocStore.getState().previewingVersion).toBeNull();
+  });
+});
+
+describe('designDocStore — adapter-switch veiligheid', () => {
+  beforeEach(() => {
+    useDesignDocStore.getState().reset(seedLandingPage());
+  });
+
+  it('detachPersistence stopt de pending save-timer — geen save meer', async () => {
+    const saveSpy = vi.fn(async () => {});
+    const adapter: PersistenceAdapter = {
+      async load() { return null; },
+      save: saveSpy,
+      async delete() {},
+    };
+    attachPersistence(adapter);
+    useDesignDocStore.getState().reset(seedLandingPage());
+    useDesignDocStore.getState().applyOps([]);
+    // Meteen detach vóór de 300ms debounce afloopt.
+    detachPersistence();
+    await new Promise((r) => setTimeout(r, 350));
+    expect(saveSpy).not.toHaveBeenCalled();
+  });
+
+  it('rapid switch: pending save van adapter A fires NIET op adapter B', async () => {
+    // Adapter A: langzame save (200ms).
+    const saveA = vi.fn(async () => {
+      await new Promise((r) => setTimeout(r, 200));
+    });
+    const adapterA: PersistenceAdapter = {
+      async load() { return null; },
+      save: saveA,
+      async delete() {},
+    };
+    // Adapter B: instant save.
+    const saveB = vi.fn(async () => {});
+    const adapterB: PersistenceAdapter = {
+      async load() { return null; },
+      save: saveB,
+      async delete() {},
+    };
+    // Wire A + schedule save.
+    attachPersistence(adapterA);
+    useDesignDocStore.getState().reset(seedLandingPage());
+    useDesignDocStore.getState().applyOps([]);
+    // Wacht tot de debounce afloopt en de save-A start (async).
+    await new Promise((r) => setTimeout(r, 320));
+    // Switch naar B midden in de save-A callback.
+    attachPersistence(adapterB);
+    // Wacht op save-A's fake latency + iets extra.
+    await new Promise((r) => setTimeout(r, 250));
+    // Save-A moet zijn aangeroepen (de setTimeout was al gevuurd), maar
+    // saveState mag NIET op 'saved' zijn gezet want adapter is inmiddels B.
+    // En saveB mag NIET zijn aangeroepen door deze pending call.
+    expect(saveB).not.toHaveBeenCalled();
+    // saveA is aangeroepen (was al in-flight), maar het resultaat wordt
+    // genegeerd door de post-await captured-check.
+    expect(saveA).toHaveBeenCalledTimes(1);
+  });
+
+  it('applyOps na attach van adapter B triggert alleen save op B (niet A)', async () => {
+    const saveA = vi.fn(async () => {});
+    const adapterA: PersistenceAdapter = {
+      async load() { return null; },
+      save: saveA,
+      async delete() {},
+    };
+    const saveB = vi.fn(async () => {});
+    const adapterB: PersistenceAdapter = {
+      async load() { return null; },
+      save: saveB,
+      async delete() {},
+    };
+    attachPersistence(adapterA);
+    // Direct switch naar B vóór eerste applyOps.
+    attachPersistence(adapterB);
+    useDesignDocStore.getState().reset(seedLandingPage());
+    useDesignDocStore.getState().applyOps([]);
+    await new Promise((r) => setTimeout(r, 350));
+    expect(saveA).not.toHaveBeenCalled();
+    expect(saveB).toHaveBeenCalledTimes(1);
   });
 });
