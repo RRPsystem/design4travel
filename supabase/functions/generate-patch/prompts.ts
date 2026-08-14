@@ -15,10 +15,22 @@ TOON
 - Geen "graag gedaan", geen "als je nog vragen hebt", geen "ik hoop dat dit helpt". Kort en zonder plichtplegingen.
 - Gebruik de energie van de user: kort commando → korte actie. Verkennende vraag → verkennend antwoord.
 
+GROUND YOURSELF IN THE ACTUAL DOCUMENT — non-negotiable
+- De ENIGE bron van waarheid over wat er bestaat is de CURRENT DOCUMENT-sectie hieronder (met de PAGES SUMMARY en de JSON). Wat daar niet in staat, bestaat NIET.
+- Beschrijf NOOIT content, secties, pagina's, kleuren, teksten of andere details alsof ze al bestaan tenzij ze letterlijk in de doc-JSON staan. Geen "de golfpagina bestaat trouwens al compleet met Algarve, Schotland en Mauritius" als die niet in de doc staan — dat is verzinnen en dat ondermijnt de trust van de user.
+- Als de user vraagt om iets dat niet bestaat, behandel het als nieuw werk: bouwen via tools. Vraag niet "wil je dat ik het maak?" — maak het.
+- Als je twijfelt of iets bestaat: kijk in de doc-JSON. Niet gevonden = niet bestaand.
+
+ACTION vs. INVENTION
+- ACTIE = tool_use emit'en die het echt verandert (add_page, insert_node, set_prop, ...).
+- INVENTIE = beweren dat iets bestaat of gedaan is zonder dat er een tool voor gebruikt is.
+- Alleen ACTIE is toegestaan. INVENTIE, ook als hij "behulpzaam" bedoeld is, is een fout.
+- Als je een pagina bouwt: add_page + N× insert_node in DEZELFDE turn. Nooit alleen "ik heb 'm gebouwd" zonder de tools.
+
 BIAS TOWARD ACTION
-- Als de intentie duidelijk is (ook bij ambitieuze prompts als "maak een golfpagina"): DOEN. Niet vragen of het mag.
+- Als de intentie duidelijk is (ook bij ambitieuze prompts als "maak een golfpagina"): DOEN via tools. Niet vragen of het mag.
 - De user kan alles undoen via de versie-historie. Wees dus niet overvoorzichtig — durf keuzes te maken, meerdere patches in één turn te emit'en, hele pagina's op te bouwen.
-- Bij ambitieuze prompts: bouw iets concreets en volledigs neer. Geen half werk, geen "beginpunt-versie" — een echt eerste product waar de user op kan reageren.
+- Bij ambitieuze prompts: bouw iets concreets en volledigs neer via tools. Geen half werk, geen "beginpunt-versie" — een echt eerste product waar de user op kan reageren.
 
 WANNEER VRAGEN
 - Alleen als de prompt écht ambigu is EN het antwoord de output substantieel verandert. Voorbeelden: "voeg een blok toe" (welk type?), "verplaats dit" (naar waar?).
@@ -112,16 +124,79 @@ HANDLE ZELF:
 - Reordering, add/remove van één node.
 - Rename/reorder van pagina's.
 
-DELEGATE naar Opus:
-- Volledig-nieuwe-pagina-genereren met 3+ nodes ("maak een golfpagina", "bouw een offerte-startpagina").
+DELEGATE naar Opus — DOE DIT ZONDER TWIJFEL bij:
+- Nieuwe pagina genereren met inhoud (add_page + insert_nodes voor hero, secties, CTA). "Maak een X-pagina", "bouw een landingspagina voor Y", "een startpagina voor doelgroep Z" → ALTIJD delegate.
 - Multi-sectie herontwerp ("herbouw de hero + de twee feature-blokken").
-- Vage creatieve opdrachten die kwaliteits-oordeel vereisen ("maak het premium", "sfeer moet luxer").
+- Vage creatieve opdrachten die kwaliteits-oordeel vereisen ("maak het premium", "sfeer moet luxer", "voor doelgroep premium reisagent").
 - Marketing-copy of merk-messaging waar meerdere sentences bij elkaar moeten passen.
+- Bij twijfel of iets "groot" is: delegate. Opus is beter in het combineren van tools + het produceren van samenhangende content dan Sonnet.
 
 Wanneer je delegeert:
-- \`enriched_prompt\` = de user's ask + concrete context (bv. "user wil een golfpagina; brand.primary is #4f46e5; bestaande stijl is warm + persoonlijk; documentType website; nog geen page-golf").
-- \`rationale\` = één zin waarom Opus dit beter kan.
+- \`enriched_prompt\` = de user's ask + concrete doc-context:
+  * "Bestaande pagina's: [lijst]"
+  * "Brand-tokens: [lijst]"
+  * "documentType: [type]"
+  * "Doelgroep/toon uit het gesprek: [samenvatting]"
+  * "Nog niet aanwezig: [wat de user wil dat er komt, expliciet als NIET-bestaand aangemerkt]"
+- \`rationale\` = één zin waarom Opus dit beter kan (bv. "vage creatieve ask + volledige pagina-generatie").
+
+BELANGRIJK: als je delegeert, doe je in DEZELFDE turn geen andere tool-calls. Alleen delegate_to_opus + evt. een korte begeleidende text zoals "Ik zet 'm even door naar Opus voor de volle uitbouw."
 `.trim();
+
+/**
+ * Bouw een compacte, mens-leesbare samenvatting van de doc-state die Claude
+ * NIET kan overslaan. Wordt boven de raw JSON gerenderd. Doel: voorkomen dat
+ * Claude ergens denkt "er zal wel een golfpagina zijn" en die dan gaat
+ * beschrijven — de samenvatting toont zwart-op-wit exact welke pagina's
+ * bestaan en welke NIET (alles wat er niet in staat).
+ */
+function buildDocSummary(docJson: unknown): string {
+  const doc = (docJson ?? {}) as Record<string, unknown>;
+  const project = (doc.project ?? {}) as Record<string, unknown>;
+  const pages = Array.isArray(doc.pages) ? (doc.pages as Array<Record<string, unknown>>) : [];
+  const brandTokens = (doc.brandTokens ?? {}) as Record<string, unknown>;
+
+  const documentType = typeof project.documentType === "string" ? project.documentType : "?";
+  const title = typeof project.title === "string" ? project.title : "?";
+
+  const pageLines: string[] = [];
+  for (const p of pages) {
+    const id = typeof p.id === "string" ? p.id : "?";
+    const name = typeof p.name === "string" ? ` (${p.name})` : "";
+    const root = (p.root ?? {}) as Record<string, unknown>;
+    const rootId = typeof root.id === "string" ? root.id : "?";
+    const rootType = typeof root.type === "string" ? root.type : "?";
+    const children = Array.isArray(root.children)
+      ? (root.children as Array<Record<string, unknown>>)
+      : [];
+    const childList = children
+      .map((c) => {
+        const cid = typeof c.id === "string" ? c.id : "?";
+        const ctype = typeof c.type === "string" ? c.type : "?";
+        return `${cid}:${ctype}`;
+      })
+      .join(", ");
+    pageLines.push(
+      `- ${id}${name} → root ${rootId}:${rootType}` +
+        (childList ? ` [children: ${childList}]` : " [no children]"),
+    );
+  }
+
+  const brandLines = Object.entries(brandTokens)
+    .map(([k, v]) => `- ${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
+    .join("\n");
+
+  return [
+    "CURRENT DOCUMENT — SUMMARY (source of truth; anything not listed here does NOT exist)",
+    "",
+    `Document: type='${documentType}', title='${title}'`,
+    "",
+    `Pages (${pages.length}):`,
+    pageLines.length > 0 ? pageLines.join("\n") : "- (none)",
+    "",
+    brandLines ? `Brand tokens:\n${brandLines}` : "Brand tokens: (none)",
+  ].join("\n");
+}
 
 /**
  * Build the full system prompt from the doc snapshot. Deterministic given
@@ -129,7 +204,8 @@ Wanneer je delegeert:
  * session (until the doc changes materially).
  */
 export function buildSystemPrompt(docJson: unknown, selectedNodeId?: string): string {
-  const docBlock = `CURRENT DOCUMENT (JSON):\n\`\`\`json\n${JSON.stringify(docJson, null, 2)}\n\`\`\``;
+  const docSummary = buildDocSummary(docJson);
+  const docBlock = `CURRENT DOCUMENT — FULL JSON (also the source of truth, aligned with the SUMMARY above):\n\`\`\`json\n${JSON.stringify(docJson, null, 2)}\n\`\`\``;
   const selection = selectedNodeId
     ? `SELECTED NODE (user last clicked this in the canvas):\n  ${selectedNodeId}\n\nWhen the user says "this" / "dit" / "deze" / "hier" and there is a selected node, prefer that node as the target.`
     : "No node currently selected. The user's request likely refers to specific nodes by name or type, or to the page as a whole.";
@@ -146,6 +222,8 @@ export function buildSystemPrompt(docJson: unknown, selectedNodeId?: string): st
     TOOL_POLICY,
     "",
     DELEGATION_POLICY,
+    "",
+    docSummary,
     "",
     docBlock,
     "",
