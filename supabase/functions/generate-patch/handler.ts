@@ -217,14 +217,22 @@ export function makeHandler(deps: HandlerDeps) {
 
     // Verify JWT
     let userClient: SupabaseClient;
-    try { userClient = deps.makeUserClient(); }
-    catch { return jsonResponse({ error: "internal_error" }, 500); }
+    try {
+      userClient = deps.makeUserClient();
+    } catch (e) {
+      console.error("[generate-patch] makeUserClient threw:", e);
+      return jsonResponse({ error: "internal_error" }, 500);
+    }
 
     let user: User | null = null;
     try {
       const res = await userClient.auth.getUser(jwt);
+      if (res.error) {
+        console.error("[generate-patch] auth.getUser returned error:", res.error.message);
+      }
       user = res.error ? null : res.data?.user ?? null;
-    } catch {
+    } catch (e) {
+      console.error("[generate-patch] auth.getUser threw:", e);
       return jsonResponse({ error: "internal_error" }, 500);
     }
     if (!user) return jsonResponse({ error: "invalid_user_token" }, 401);
@@ -238,37 +246,80 @@ export function makeHandler(deps: HandlerDeps) {
 
     // Anthropic key
     const apiKey = deps.getAnthropicApiKey();
-    if (!apiKey) return jsonResponse({ error: "internal_error" }, 500);
+    if (!apiKey) {
+      console.error("[generate-patch] ANTHROPIC_API_KEY is missing from env");
+      return jsonResponse({ error: "internal_error" }, 500);
+    }
 
-    // Load doc under USER JWT — RLS controls access. Als de user geen access
-    // heeft, geeft PostgREST 0 rijen terug (geen leak). We hoeven niet zelf
-    // membership te checken.
-    let docRow: { id: string; doc: unknown; project_id: string; organization_id: string } | null;
+    // Load doc under USER JWT — RLS controls access. Twee losse queries
+    // i.p.v. één PostgREST-embedded join zodat elke faalvorm een specifieke
+    // log krijgt en fk-resolutie geen bron van verwarring is.
+    let docRow: { doc: unknown; project_id: string; organization_id: string };
     try {
       const { data, error } = await userClient
         .from("project_documents")
-        .select("id, doc, projects!inner(id, organization_id)")
+        .select("doc, project_id")
         .eq("id", input.project_document_id)
         .maybeSingle();
-      if (error) return jsonResponse({ error: "internal_error" }, 500);
-      if (!data) return jsonResponse({ error: "not_found" }, 404);
-      const proj = (data as { projects: unknown }).projects;
-      const projFirst = Array.isArray(proj) ? (proj[0] as { id: string; organization_id: string } | undefined) : (proj as { id: string; organization_id: string } | null);
-      if (!projFirst) return jsonResponse({ error: "internal_error" }, 500);
+      if (error) {
+        console.error(
+          "[generate-patch] project_documents load failed:",
+          error.message,
+          "code=",
+          (error as { code?: string }).code,
+        );
+        return jsonResponse({ error: "internal_error" }, 500);
+      }
+      if (!data) {
+        console.error(
+          "[generate-patch] project_documents not visible under RLS for id=",
+          input.project_document_id,
+          "user=",
+          userId,
+        );
+        return jsonResponse({ error: "not_found" }, 404);
+      }
+      const partial = data as { doc: unknown; project_id: string };
+
+      const orgRes = await userClient
+        .from("projects")
+        .select("organization_id")
+        .eq("id", partial.project_id)
+        .maybeSingle();
+      if (orgRes.error) {
+        console.error(
+          "[generate-patch] projects load failed:",
+          orgRes.error.message,
+          "code=",
+          (orgRes.error as { code?: string }).code,
+        );
+        return jsonResponse({ error: "internal_error" }, 500);
+      }
+      if (!orgRes.data) {
+        console.error(
+          "[generate-patch] projects row not visible under RLS for project_id=",
+          partial.project_id,
+        );
+        return jsonResponse({ error: "internal_error" }, 500);
+      }
       docRow = {
-        id: (data as { id: string }).id,
-        doc: (data as { doc: unknown }).doc,
-        project_id: projFirst.id,
-        organization_id: projFirst.organization_id,
+        doc: partial.doc,
+        project_id: partial.project_id,
+        organization_id: (orgRes.data as { organization_id: string }).organization_id,
       };
-    } catch {
+    } catch (e) {
+      console.error("[generate-patch] doc-load threw:", e);
       return jsonResponse({ error: "internal_error" }, 500);
     }
 
     // Admin client voor metrics-writes
     let admin: SupabaseClient;
-    try { admin = deps.makeAdmin(); }
-    catch { return jsonResponse({ error: "internal_error" }, 500); }
+    try {
+      admin = deps.makeAdmin();
+    } catch (e) {
+      console.error("[generate-patch] makeAdmin threw:", e);
+      return jsonResponse({ error: "internal_error" }, 500);
+    }
 
     // -------------------------------------------------------------------------
     // Sonnet router-call

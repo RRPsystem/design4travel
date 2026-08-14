@@ -130,21 +130,20 @@ function makeUserClient(spy: Spy, opts: { user?: User | null; docExists?: boolea
         error: null,
       }),
     },
-    from: (_table: string) => {
+    from: (table: string) => {
       const stub = {
         select: () => stub,
         eq: () => stub,
-        maybeSingle: async () =>
-          opts.docExists === false
-            ? { data: null, error: null }
-            : {
-                data: {
-                  id: DOC_UUID,
-                  doc: OK_DOC,
-                  projects: { id: PROJECT_UUID, organization_id: ORG_UUID },
-                },
-                error: null,
-              },
+        maybeSingle: async () => {
+          if (table === "project_documents") {
+            if (opts.docExists === false) return { data: null, error: null };
+            return { data: { doc: OK_DOC, project_id: PROJECT_UUID }, error: null };
+          }
+          if (table === "projects") {
+            return { data: { organization_id: ORG_UUID }, error: null };
+          }
+          return { data: null, error: null };
+        },
       };
       return stub;
     },
