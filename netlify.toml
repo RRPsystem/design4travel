@@ -1,0 +1,11 @@
+[build]
+  command = "npm install --legacy-peer-deps && npm run build"
+  publish = "apps/app/dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
