@@ -11,6 +11,7 @@ export function PreviewApp() {
   const [doc, setDoc] = useState<DesignDoc | null>(null);
   const [variant, setVariant] = useState<SampleDataVariant>('luxury');
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(undefined);
+  const [currentPageId, setCurrentPageId] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     sendToHost({ kind: 'ready' });
@@ -19,10 +20,13 @@ export function PreviewApp() {
         setDoc(msg.doc);
         setVariant(msg.variant);
         setSelectedNodeId(msg.selectedNodeId);
+        if (msg.currentPageId) setCurrentPageId(msg.currentPageId);
       } else if (msg.kind === 'set-selection') {
         setSelectedNodeId(msg.nodeId);
       } else if (msg.kind === 'set-variant') {
         setVariant(msg.variant);
+      } else if (msg.kind === 'set-page') {
+        setCurrentPageId(msg.pageId);
       }
     });
   }, []);
@@ -35,13 +39,27 @@ export function PreviewApp() {
     );
   }
 
+  // Kies de te tonen pagina. Renderer's web-target rendert pages[0], dus we
+  // sturen een sub-doc waar de gekozen pagina op index 0 staat. Alle andere
+  // eigenschappen (brandTokens, project, etc.) blijven ongewijzigd.
+  const pageToShow =
+    doc.pages.find((p) => p.id === currentPageId) ?? doc.pages[0] ?? null;
+  if (!pageToShow) {
+    return (
+      <div style={{ padding: 48, color: '#6b7280', fontFamily: 'system-ui' }}>
+        Dit ontwerp heeft nog geen pagina&apos;s.
+      </div>
+    );
+  }
+  const previewDoc: DesignDoc = { ...doc, pages: [pageToShow] };
+
   try {
     return (
       <div
         onClick={() => sendSelect(undefined)}
         style={{ minHeight: '100vh' }}
       >
-        {renderTarget('web', doc, {
+        {renderTarget('web', previewDoc, {
           registry,
           dataModel: SAMPLE_DATA_VARIANTS[variant],
           selectedNodeId,

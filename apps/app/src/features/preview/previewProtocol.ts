@@ -8,9 +8,17 @@ import type { SampleDataVariant } from '@design4/data-bindings';
  */
 
 export type HostToPreview =
-  | { kind: 'load-doc'; doc: DesignDoc; variant: SampleDataVariant; selectedNodeId?: string }
+  | {
+      kind: 'load-doc';
+      doc: DesignDoc;
+      variant: SampleDataVariant;
+      selectedNodeId?: string;
+      /** Welke pagina de preview moet tonen. Default: eerste pagina in doc.pages. */
+      currentPageId?: string;
+    }
   | { kind: 'set-selection'; nodeId?: string }
-  | { kind: 'set-variant'; variant: SampleDataVariant };
+  | { kind: 'set-variant'; variant: SampleDataVariant }
+  | { kind: 'set-page'; pageId: string };
 
 export type PreviewToHost =
   | { kind: 'ready' }

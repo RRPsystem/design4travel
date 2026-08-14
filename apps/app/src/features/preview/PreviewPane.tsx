@@ -1,6 +1,27 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDesignDocStore } from '../../state/designDocStore.js';
 import { listenForPreview, sendToPreview } from './previewProtocol.js';
+
+/**
+ * Kies welke pagina-id de preview toont als de doc verandert.
+ * - Als current nog bestaat in de nieuwe pagina-lijst: blijf staan.
+ * - Als er een nieuwe pagina is bijgekomen (id die er niet was): switch daar
+ *   naartoe. Rationale: als de user "maak een golfpagina" vroeg, wil hij die
+ *   direct zien staan, niet in de oude view blijven hangen.
+ * - Anders: fallback naar de eerste pagina.
+ */
+function pickNextPageId(
+  currentId: string | undefined,
+  previousIds: string[],
+  nextIds: string[],
+): string | undefined {
+  if (currentId && nextIds.includes(currentId)) {
+    const newlyAdded = nextIds.filter((id) => !previousIds.includes(id));
+    if (newlyAdded.length > 0) return newlyAdded[0];
+    return currentId;
+  }
+  return nextIds[0];
+}
 
 const VARIANTS = ['luxury', 'budget', 'missing-image'] as const;
 
@@ -20,10 +41,23 @@ export function PreviewPane({ onRequestRestorePreviewed }: Props) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [ready, setReady] = useState(false);
   const [viewport, setViewport] = useState<'desktop' | 'mobile'>('desktop');
+  const [currentPageId, setCurrentPageId] = useState<string | undefined>(undefined);
+  const previousPageIds = useRef<string[]>([]);
 
   // Welk document toont de preview? Actuele doc, tenzij de gebruiker een
   // oudere versie bekijkt.
   const previewDoc = previewingVersion?.doc ?? doc;
+  const pages = useMemo(() => previewDoc?.pages ?? [], [previewDoc]);
+
+  // Sync currentPageId aan de doc's pages: bij eerste load pak de eerste,
+  // bij add van een nieuwe pagina switch daar automatisch naartoe, bij
+  // verwijderen fallback naar eerste. Zie pickNextPageId hierboven.
+  useEffect(() => {
+    const nextIds = pages.map((p) => p.id);
+    const next = pickNextPageId(currentPageId, previousPageIds.current, nextIds);
+    previousPageIds.current = nextIds;
+    if (next !== currentPageId) setCurrentPageId(next);
+  }, [pages, currentPageId]);
 
   // Listen for preview→host messages
   useEffect(() => {
@@ -38,8 +72,14 @@ export function PreviewPane({ onRequestRestorePreviewed }: Props) {
     if (!ready) return;
     const win = iframeRef.current?.contentWindow;
     if (!win || !previewDoc?.id) return;
-    sendToPreview(win, { kind: 'load-doc', doc: previewDoc, variant, selectedNodeId });
-  }, [ready, previewDoc, variant, selectedNodeId]);
+    sendToPreview(win, {
+      kind: 'load-doc',
+      doc: previewDoc,
+      variant,
+      selectedNodeId,
+      currentPageId,
+    });
+  }, [ready, previewDoc, variant, selectedNodeId, currentPageId]);
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#f9fafb' }}>
@@ -79,6 +119,7 @@ export function PreviewPane({ onRequestRestorePreviewed }: Props) {
           gap: 12,
           alignItems: 'center',
           background: '#fff',
+          flexWrap: 'wrap',
         }}
       >
         <div style={{ fontSize: 12, color: '#6b7280' }}>Voorbeeld</div>
@@ -94,6 +135,22 @@ export function PreviewPane({ onRequestRestorePreviewed }: Props) {
             </button>
           ))}
         </div>
+        {pages.length > 1 ? (
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+            <span style={{ fontSize: 12, color: '#6b7280' }}>Pagina:</span>
+            {pages.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => setCurrentPageId(p.id)}
+                style={pillBtn(p.id === currentPageId)}
+                title={p.id}
+              >
+                {p.name || p.id}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
           <span style={{ fontSize: 12, color: '#6b7280' }}>Sample-data:</span>
           {VARIANTS.map((v) => (
