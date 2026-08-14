@@ -16,11 +16,18 @@ function optionalEnv(name: string): string | null {
   return v;
 }
 
-function makeUserClient(): SupabaseClient {
+function makeUserClient(jwt: string): SupabaseClient {
+  // Belangrijk: `global.headers.Authorization` zorgt dat elke PostgREST-call
+  // (.from(...).select(...) etc.) onder de user's JWT loopt. Alleen de anon-
+  // key als 2e arg zetten is NIET genoeg — dan gaan de queries als anonymous
+  // en RLS-policies met auth.uid()-checks failen met 42501 (permission denied).
   return createClient(
     requireEnv("SUPABASE_URL"),
     requireEnv("SUPABASE_ANON_KEY"),
-    { auth: { persistSession: false, autoRefreshToken: false } },
+    {
+      auth: { persistSession: false, autoRefreshToken: false },
+      global: { headers: { Authorization: `Bearer ${jwt}` } },
+    },
   );
 }
 

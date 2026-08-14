@@ -31,7 +31,13 @@ const PRICING_VERSION = "anthropic-2026-08";
 // -----------------------------------------------------------------------------
 
 export interface HandlerDeps {
-  makeUserClient: () => SupabaseClient;
+  /**
+   * Constructor krijgt de user-JWT mee zodat `global.headers.Authorization`
+   * wordt gezet en subsequent `.from().select()`-calls onder de user's RLS-
+   * context lopen. Alleen `getUser(jwt)` doen is niet genoeg — die verifieert
+   * de JWT maar attach't hem niet aan de client.
+   */
+  makeUserClient: (jwt: string) => SupabaseClient;
   makeAdmin: () => SupabaseClient;
   getAnthropicApiKey: () => string | null;
   getOrchestratorModel: () => string;
@@ -215,10 +221,11 @@ export function makeHandler(deps: HandlerDeps) {
     if (!parsed.success) return jsonResponse({ error: "invalid_request" }, 400);
     const input = parsed.data;
 
-    // Verify JWT
+    // Verify JWT — client wordt gemaakt MET de JWT als Authorization-header
+    // zodat latere .from()-calls onder de user's RLS-context lopen.
     let userClient: SupabaseClient;
     try {
-      userClient = deps.makeUserClient();
+      userClient = deps.makeUserClient(jwt);
     } catch (e) {
       console.error("[generate-patch] makeUserClient threw:", e);
       return jsonResponse({ error: "internal_error" }, 500);

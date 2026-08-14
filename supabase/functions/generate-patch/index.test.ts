@@ -123,7 +123,7 @@ function failureResponse(status: number, errorCode: string): AnthropicCallFailur
 }
 
 function makeUserClient(spy: Spy, opts: { user?: User | null; docExists?: boolean } = {}) {
-  return () => ({
+  return (_jwt: string) => ({
     auth: {
       getUser: async () => ({
         data: { user: opts.user === undefined ? OK_USER : opts.user },
