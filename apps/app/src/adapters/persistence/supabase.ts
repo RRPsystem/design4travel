@@ -74,7 +74,7 @@ export function createSupabasePersistenceAdapter(
       return parsed.data as DesignDoc;
     },
 
-    async save(_docId, doc) {
+    async save(docId, doc) {
       const expected = getExpectedLockVersion();
       const res = await invokeEdge<SaveResponse>(client, 'save-document', {
         project_id: projectId,
@@ -97,6 +97,27 @@ export function createSupabasePersistenceAdapter(
         throw new Error('save-document response missing new_lock_version');
       }
       onLockVersionUpdate(newLock);
+
+      // Snapshot na de succesvolle save. `save_document_internal` maakt zelf
+      // GEEN versie-rij aan — dat is bewust gescheiden gehouden zodat
+      // snapshotting later kan worden gedebounced/gededupliceerd. Voor v1:
+      // één snapshot per debounced save (spiegelt het mock-gedrag). Faalt de
+      // snapshot dan blokkeert dat de save NIET (de doc-update is al
+      // committed); we loggen en gaan door.
+      try {
+        const { error } = await client.rpc('create_document_snapshot', {
+          p_project_document_id: docId,
+          p_note: null,
+        });
+        if (error) {
+          console.warn(
+            '[persistence] snapshot failed (save was OK):',
+            error.message,
+          );
+        }
+      } catch (e) {
+        console.warn('[persistence] snapshot threw (save was OK):', e);
+      }
     },
 
     async delete() {

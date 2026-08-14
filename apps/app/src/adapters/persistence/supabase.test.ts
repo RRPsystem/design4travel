@@ -33,9 +33,11 @@ function makeDoc(): DesignDoc {
 function makeClient(opts: {
   invokeResult?: { data: unknown; error: unknown };
   loadResult?: { data: unknown; error: unknown };
+  rpcResult?: { data: unknown; error: unknown };
 }): {
   client: SupabaseClient;
   invoke: ReturnType<typeof vi.fn>;
+  rpc: ReturnType<typeof vi.fn>;
   loadStub: {
     select: ReturnType<typeof vi.fn>;
     eq: ReturnType<typeof vi.fn>;
@@ -43,6 +45,7 @@ function makeClient(opts: {
   };
 } {
   const invoke = vi.fn(async () => opts.invokeResult ?? { data: null, error: null });
+  const rpc = vi.fn(async () => opts.rpcResult ?? { data: null, error: null });
   const terminal = opts.loadResult ?? { data: null, error: null };
   const loadStub = {
     select: vi.fn(() => loadStub),
@@ -56,13 +59,14 @@ function makeClient(opts: {
   const client: Partial<SupabaseClient> = {
     from: vi.fn(() => loadStub) as unknown as SupabaseClient['from'],
     functions: { invoke } as unknown as SupabaseClient['functions'],
+    rpc: rpc as unknown as SupabaseClient['rpc'],
   };
-  return { client: client as SupabaseClient, invoke, loadStub };
+  return { client: client as SupabaseClient, invoke, rpc, loadStub };
 }
 
 describe('SupabasePersistenceAdapter — save', () => {
-  it('sends the correct body and calls onLockVersionUpdate on 200', async () => {
-    const { client, invoke } = makeClient({
+  it('sends the correct body, calls onLockVersionUpdate on 200, then snapshots', async () => {
+    const { client, invoke, rpc } = makeClient({
       invokeResult: { data: { new_lock_version: 4 }, error: null },
     });
     const onUpdate = vi.fn();
@@ -75,6 +79,11 @@ describe('SupabasePersistenceAdapter — save', () => {
     });
     const doc = makeDoc();
     await adapter.save(DOC_ID, doc);
+    // Snapshot-RPC moet zijn aangeroepen met het projectDocumentId
+    expect(rpc).toHaveBeenCalledWith('create_document_snapshot', {
+      p_project_document_id: DOC_ID,
+      p_note: null,
+    });
     expect(invoke).toHaveBeenCalledWith('save-document', {
       body: {
         project_id: PROJECT_ID,
@@ -139,6 +148,25 @@ describe('SupabasePersistenceAdapter — save', () => {
     });
     await expect(adapter.save(DOC_ID, makeDoc())).rejects.toThrow(/save-document failed/);
     expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it('snapshot failure does NOT throw — save is committed regardless', async () => {
+    const { client, rpc } = makeClient({
+      invokeResult: { data: { new_lock_version: 5 }, error: null },
+      rpcResult: { data: null, error: { message: 'snapshot boom' } },
+    });
+    const onUpdate = vi.fn();
+    const adapter = createSupabasePersistenceAdapter({
+      client,
+      projectId: PROJECT_ID,
+      schemaVersion: SCHEMA_VERSION,
+      getExpectedLockVersion: () => 4,
+      onLockVersionUpdate: onUpdate,
+    });
+    // Moet NIET throwen — save was OK, snapshot faalde maar dat is niet fataal.
+    await adapter.save(DOC_ID, makeDoc());
+    expect(onUpdate).toHaveBeenCalledWith(5);
+    expect(rpc).toHaveBeenCalled();
   });
 
   it('throws when new_lock_version is missing from response', async () => {
