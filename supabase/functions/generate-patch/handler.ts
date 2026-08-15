@@ -311,6 +311,19 @@ function sseEncode(event: string, data: unknown): Uint8Array {
   return new TextEncoder().encode(payload);
 }
 
+/**
+ * Fallback-tekst wanneer Anthropic geen text-block emit'te. Zonder deze
+ * fallback zou de UI een leeg assistant-bubbel tonen — user weet dan niet
+ * of er iets is gebeurd. Bij patches: bevestig dat er wijzigingen zijn
+ * doorgevoerd. Bij geen patches: expliciet melden dat er niets is gedaan
+ * zodat de user niet denkt dat de prompt is genegeerd.
+ */
+function defaultAckIfEmpty(patchCount: number): string {
+  if (patchCount === 0) return "Ik heb geen wijziging kunnen doen voor deze vraag. Kun je specifieker aangeven wat je bedoelt?";
+  if (patchCount === 1) return "Wijziging doorgevoerd.";
+  return `${patchCount} wijzigingen doorgevoerd.`;
+}
+
 function mapUpstreamToClientErrorCode(f: AnthropicCallFailure): string {
   if (f.status === 429) return "rate_limited";
   if (f.status >= 500 && f.status < 600) return "upstream_unavailable";
@@ -664,7 +677,9 @@ export function makeHandler(deps: HandlerDeps) {
             const patches = toPatches(opusAcc.toolCalls);
             emitTerminal({
               kind: "done",
-              assistantMessage: opusAcc.text || routerAcc.text || "",
+              assistantMessage:
+                (opusAcc.text || routerAcc.text || "").trim() ||
+                defaultAckIfEmpty(patches.length),
               patches,
             });
             controller.close();
@@ -675,7 +690,8 @@ export function makeHandler(deps: HandlerDeps) {
           const patches = toPatches(routerAcc.toolCalls);
           emitTerminal({
             kind: "done",
-            assistantMessage: routerAcc.text || "",
+            assistantMessage:
+              (routerAcc.text || "").trim() || defaultAckIfEmpty(patches.length),
             patches,
           });
           controller.close();
