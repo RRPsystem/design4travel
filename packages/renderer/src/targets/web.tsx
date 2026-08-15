@@ -2,6 +2,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import type { DesignDoc, NodeInstance } from '@design4/design-doc';
 import { resolveProps } from '../resolveProps.js';
 import type { RenderContext, TargetAdapter } from '../types.js';
+import { aspectRatioToCss, boxStyleToCss, maskPresetToCss } from '../style/cssMap.js';
 
 /**
  * Scoped global rules applied inside [data-design4-root]. Kept in one place so
@@ -88,6 +89,18 @@ function renderNode(node: NodeInstance, doc: DesignDoc, ctx: RenderContext): Rea
       return commonWrap(<Hero props={props} />);
     case 'cta':
       return commonWrap(<Cta props={props} />);
+    case 'section':
+      return commonWrap(<Section props={props}>{children}</Section>);
+    case 'button':
+      return commonWrap(<Button props={props} />);
+    case 'badge':
+      return commonWrap(<Badge props={props} />);
+    case 'divider':
+      return commonWrap(<Divider props={props} />);
+    case 'spacer':
+      return commonWrap(<Spacer props={props} />);
+    case 'shape':
+      return commonWrap(<Shape props={props} />);
     default:
       return commonWrap(<UnknownNode nodeId={node.id} nodeType={node.type} onSelect={ctx.onSelect} />);
   }
@@ -102,10 +115,11 @@ function LayoutRow({
   props: Record<string, unknown>;
   children?: ReactNode;
 }) {
+  const box = boxStyleToCss(props.style);
   const style: CSSProperties = {
     display: 'flex',
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexWrap: (props.wrap as boolean | undefined) === false ? 'nowrap' : 'wrap',
     gap: num(props.gap, 16),
     alignItems: mapAlign(props.align as string, 'stretch'),
     justifyContent: mapJustify(props.justify as string, 'flex-start'),
@@ -113,6 +127,7 @@ function LayoutRow({
     width: '100%',
     maxWidth: '100%',
     minWidth: 0,
+    ...box, // BoxStyle wint van default padding wanneer beide gezet
   };
   return <div style={style}>{children}</div>;
 }
@@ -125,6 +140,7 @@ function LayoutColumn({
   children?: ReactNode;
 }) {
   const userMax = props.maxWidth as number | undefined;
+  const box = boxStyleToCss(props.style);
   const style: CSSProperties = {
     display: 'flex',
     flexDirection: 'column',
@@ -136,8 +152,264 @@ function LayoutColumn({
     marginRight: 'auto',
     width: '100%',
     minWidth: 0,
+    ...box,
   };
   return <div style={style}>{children}</div>;
+}
+
+// -----------------------------------------------------------------------------
+// Section — semantische container met full-bleed background + geconstrainde
+// content-breedte + optional overlay.
+// -----------------------------------------------------------------------------
+
+function Section({
+  props,
+  children,
+}: {
+  props: Record<string, unknown>;
+  children?: ReactNode;
+}) {
+  const box = boxStyleToCss(props.style);
+  const paddingY = num(props.paddingY, 48);
+  const paddingX = num(props.paddingX, 24);
+  const gap = num(props.gap, 24);
+  const maxContentWidth = num(props.maxContentWidth, 1200);
+  const overlayColor = props.overlayColor as string | undefined;
+  const overlayOpacity = num(props.overlayOpacity, 0);
+  const hasOverlay = overlayColor && overlayOpacity > 0;
+
+  const outer: CSSProperties = {
+    position: 'relative',
+    width: '100%',
+    paddingTop: paddingY,
+    paddingBottom: paddingY,
+    paddingLeft: paddingX,
+    paddingRight: paddingX,
+    ...box,
+  };
+
+  const inner: CSSProperties = {
+    position: 'relative',
+    zIndex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    gap,
+    alignItems: mapAlign(props.align as string, 'stretch'),
+    maxWidth: `min(${maxContentWidth}px, 100%)`,
+    marginLeft: 'auto',
+    marginRight: 'auto',
+    width: '100%',
+  };
+
+  return (
+    <section style={outer}>
+      {hasOverlay ? (
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'absolute', inset: 0, background: overlayColor,
+            opacity: overlayOpacity, pointerEvents: 'none', zIndex: 0,
+          }}
+        />
+      ) : null}
+      <div style={inner}>{children}</div>
+    </section>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Button — interactieve knop of visuele label als er geen href is.
+// -----------------------------------------------------------------------------
+
+function Button({ props }: { props: Record<string, unknown> }) {
+  const size = (props.size as 'xs' | 'sm' | 'md' | 'lg') ?? 'md';
+  const padX = { xs: 8, sm: 12, md: 18, lg: 28 }[size];
+  const padY = { xs: 4, sm: 6, md: 10, lg: 14 }[size];
+  const fs = { xs: 12, sm: 13, md: 14, lg: 16 }[size];
+  const variant = (props.variant as 'solid' | 'outline' | 'ghost') ?? 'solid';
+  const color = (props.color as string | undefined) ?? '#111827';
+  const textColor =
+    (props.textColor as string | undefined) ??
+    (variant === 'solid' ? '#ffffff' : color);
+  const align = (props.align as 'start' | 'center' | 'end' | 'stretch') ?? 'start';
+  const width = props.width;
+  const fontWeight = ({ normal: 400, medium: 500, semibold: 600, bold: 700 } as const)[
+    (props.fontWeight as 'normal' | 'medium' | 'semibold' | 'bold') ?? 'semibold'
+  ];
+  const box = boxStyleToCss(props.style);
+  const href = (props.href as string | undefined)?.trim() ?? '';
+  const isInteractive = href.length > 0 && href !== '#';
+
+  const style: CSSProperties = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: `${padY}px ${padX}px`,
+    fontSize: fs,
+    fontWeight,
+    background: variant === 'solid' ? color : 'transparent',
+    color: textColor,
+    border:
+      variant === 'outline' ? `1px solid ${color}` : variant === 'ghost' ? '1px solid transparent' : 'none',
+    borderRadius: 999,
+    textDecoration: 'none',
+    cursor: isInteractive ? 'pointer' : 'default',
+    width: width === 'full' ? '100%' : typeof width === 'number' ? width : undefined,
+    ...box,
+  };
+
+  const containerStyle: CSSProperties = {
+    display: 'flex',
+    justifyContent: mapJustify(align, 'flex-start'),
+  };
+
+  return (
+    <div style={containerStyle}>
+      {isInteractive ? (
+        <a href={href} onClick={(e) => e.preventDefault()} style={style}>
+          {String(props.text ?? '')}
+        </a>
+      ) : (
+        // Bewust géén klikbaar element — voorkomt dat een "button" die
+        // niks doet toch klikbaar oogt. Renders als span/label.
+        <span role="text" style={style}>
+          {String(props.text ?? '')}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Badge — statische label.
+// -----------------------------------------------------------------------------
+
+function Badge({ props }: { props: Record<string, unknown> }) {
+  const variant = (props.variant as 'solid' | 'subtle' | 'outline') ?? 'subtle';
+  const size = (props.size as 'xs' | 'sm' | 'md') ?? 'sm';
+  const padX = { xs: 6, sm: 8, md: 12 }[size];
+  const padY = { xs: 1, sm: 2, md: 4 }[size];
+  const fs = { xs: 10, sm: 11, md: 13 }[size];
+  const color = (props.color as string | undefined) ?? '#4f46e5';
+  const textColor =
+    (props.textColor as string | undefined) ??
+    (variant === 'solid' ? '#ffffff' : variant === 'subtle' ? color : color);
+  const bg =
+    variant === 'solid' ? color : variant === 'subtle' ? `${color}20` : 'transparent';
+  const border =
+    variant === 'outline' ? `1px solid ${color}` : '1px solid transparent';
+  const box = boxStyleToCss(props.style);
+  const style: CSSProperties = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    padding: `${padY}px ${padX}px`,
+    fontSize: fs,
+    fontWeight: 600,
+    background: bg,
+    color: textColor,
+    border,
+    borderRadius: 999,
+    letterSpacing: (props.uppercase as boolean | undefined) ? 0.5 : 0,
+    textTransform: (props.uppercase as boolean | undefined) ? 'uppercase' : 'none',
+    ...box,
+  };
+  return <span style={style}>{String(props.text ?? '')}</span>;
+}
+
+// -----------------------------------------------------------------------------
+// Divider — horizontale of verticale lijn.
+// -----------------------------------------------------------------------------
+
+function Divider({ props }: { props: Record<string, unknown> }) {
+  const orientation =
+    (props.orientation as 'horizontal' | 'vertical') ?? 'horizontal';
+  const thickness = num(props.thickness, 1);
+  const color = (props.color as string | undefined) ?? '#e5e7eb';
+  const style = (props.style as string | undefined) ?? 'solid';
+  const length = props.length as number | undefined;
+  const align = (props.align as 'start' | 'center' | 'end') ?? 'start';
+  const spacing = num(props.spacing, 0);
+
+  if (orientation === 'vertical') {
+    return (
+      <div
+        style={{
+          display: 'inline-block',
+          verticalAlign: 'middle',
+          width: thickness,
+          height: length ?? '100%',
+          background: 'transparent',
+          borderLeft: `${thickness}px ${style} ${color}`,
+          marginLeft: spacing,
+          marginRight: spacing,
+        }}
+      />
+    );
+  }
+  return (
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: mapJustify(align, 'flex-start'),
+        marginTop: spacing,
+        marginBottom: spacing,
+      }}
+    >
+      <div
+        style={{
+          width: length ?? '100%',
+          height: 0,
+          borderTop: `${thickness}px ${style} ${color}`,
+        }}
+      />
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Spacer — lege ruimte.
+// -----------------------------------------------------------------------------
+
+function Spacer({ props }: { props: Record<string, unknown> }) {
+  const size = num(props.size, 24);
+  const axis = (props.axis as 'vertical' | 'horizontal' | 'auto') ?? 'auto';
+  const isHorizontal = axis === 'horizontal';
+  return (
+    <div
+      aria-hidden="true"
+      style={
+        isHorizontal
+          ? { display: 'inline-block', width: size, height: 1 }
+          : { width: '100%', height: size }
+      }
+    />
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Shape — decoratief vorm-element.
+// -----------------------------------------------------------------------------
+
+function Shape({ props }: { props: Record<string, unknown> }) {
+  const variant = (props.variant as 'rectangle' | 'circle' | 'oval') ?? 'rectangle';
+  const width = num(props.width, 120);
+  const height = num(props.height, 120);
+  const color = (props.color as string | undefined) ?? '#e5e7eb';
+  const box = boxStyleToCss(props.style);
+
+  // Variant → default borderRadius. Style.radius (indien gezet) overrules.
+  let radiusStyle: CSSProperties = {};
+  if (variant === 'circle') radiusStyle = { borderRadius: '50%' };
+  else if (variant === 'oval') radiusStyle = { borderRadius: '50%', width, height: Math.round(height * 0.6) };
+
+  const style: CSSProperties = {
+    width,
+    height,
+    background: color,
+    ...radiusStyle,
+    ...box, // style.radius wint over variant-default als beide zijn gezet
+  };
+  return <div aria-hidden="true" style={style} />;
 }
 
 function Heading({ props }: { props: Record<string, unknown> }) {
@@ -170,23 +442,36 @@ function Text({ props }: { props: Record<string, unknown> }) {
 function Image({ props }: { props: Record<string, unknown> }) {
   const src = props.src as string;
   if (!src) return <ImageMissing />;
+  const width = props.width as number | undefined;
+  const height = props.height as number | undefined;
+  const aspect = aspectRatioToCss(props.aspectRatio);
+  const objectFit = (props.objectFit as string | undefined) ?? 'cover';
+  const objectPosition =
+    ((props.objectPosition as string | undefined) ?? 'center').replace('-', ' ');
+  const mask = maskPresetToCss(props.maskPreset, width, height);
+  const box = boxStyleToCss(props.style);
+  const style: CSSProperties = {
+    width: width ?? '100%',
+    height: height ?? (aspect ? 'auto' : 'auto'),
+    aspectRatio: aspect,
+    display: 'block',
+    objectFit: objectFit as CSSProperties['objectFit'],
+    objectPosition,
+    ...mask,           // maskPreset default radius
+    ...box,            // style.radius / border / shadow / opacity override
+  };
   return (
     <img
       src={src}
       alt={String(props.alt ?? '')}
-      style={{
-        width: (props.width as number | undefined) ?? '100%',
-        height: (props.height as number | undefined) ?? 'auto',
-        borderRadius: num(props.radius, 0),
-        display: 'block',
-        objectFit: 'cover',
-      }}
+      style={style}
     />
   );
 }
 
 function Hero({ props }: { props: Record<string, unknown> }) {
   const userTitleSize = num(props.titleFontSize, 56);
+  const box = boxStyleToCss(props.style);
   const style: CSSProperties = {
     position: 'relative',
     height: num(props.height, 520),
@@ -200,26 +485,48 @@ function Hero({ props }: { props: Record<string, unknown> }) {
     justifyContent: mapJustify((props.align as string) ?? 'center', 'center'),
     color: (props.titleColor as string) ?? '#fff',
     overflow: 'hidden',
+    ...box,
   };
   const inner: CSSProperties = {
     position: 'relative',
+    zIndex: 1,
     padding: 'clamp(1rem, 4vw, 3rem)',
     textAlign: (props.align as CSSProperties['textAlign']) ?? 'center',
     maxWidth: 'min(900px, 100%)',
     width: '100%',
   };
-  const overlay = (props.overlay as boolean) ?? true;
+  // Overlay: expliciete overlayColor + overlayOpacity wint; legacy `overlay:true`
+  // fallback default gradient (backward-compat met bestaande docs).
+  const overlayColor = props.overlayColor as string | undefined;
+  const overlayOpacity = props.overlayOpacity as number | undefined;
+  const legacyOverlay = (props.overlay as boolean | undefined) ?? true;
+  let overlayEl: ReactNode = null;
+  if (overlayColor && typeof overlayOpacity === 'number' && overlayOpacity > 0) {
+    overlayEl = (
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'absolute', inset: 0, background: overlayColor,
+          opacity: overlayOpacity, pointerEvents: 'none',
+        }}
+      />
+    );
+  } else if (legacyOverlay && !overlayColor) {
+    overlayEl = (
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: 'linear-gradient(rgba(0,0,0,0.35), rgba(0,0,0,0.55))',
+          pointerEvents: 'none',
+        }}
+      />
+    );
+  }
   return (
     <section style={style}>
-      {overlay ? (
-        <div
-          style={{
-            position: 'absolute',
-            inset: 0,
-            background: 'linear-gradient(rgba(0,0,0,0.35), rgba(0,0,0,0.55))',
-          }}
-        />
-      ) : null}
+      {overlayEl}
       <div style={inner}>
         <h1
           style={{

@@ -2,14 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { BUILTIN_NODES, createDefaultRegistry } from './registry.js';
 
 describe('typed-nodes registry', () => {
-  it('has exactly 7 built-in nodes', () => {
-    expect(BUILTIN_NODES).toHaveLength(7);
+  it('has all built-in nodes', () => {
+    // 7 originele + 6 nieuwe primitives (section, button, badge, divider,
+    // spacer, shape) = 13.
+    expect(BUILTIN_NODES).toHaveLength(13);
   });
 
   it('exposes the expected types', () => {
     const types = BUILTIN_NODES.map((n) => n.type).sort();
     expect(types).toEqual(
-      ['cta', 'heading', 'hero', 'image', 'layout-column', 'layout-row', 'text'].sort(),
+      [
+        'badge', 'button', 'cta', 'divider', 'heading', 'hero', 'image',
+        'layout-column', 'layout-row', 'section', 'shape', 'spacer', 'text',
+      ].sort(),
     );
   });
 

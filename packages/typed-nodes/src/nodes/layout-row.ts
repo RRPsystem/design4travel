@@ -1,11 +1,16 @@
 import { z } from 'zod';
 import type { NodeDefinition } from '../types.js';
 
+import { BoxStyleSchema } from '../style/boxStyle.js';
+
 export const LayoutRowPropsSchema = z.object({
   gap: z.number().min(0).default(16),
   align: z.enum(['start', 'center', 'end', 'stretch']).default('stretch'),
   justify: z.enum(['start', 'center', 'end', 'space-between']).default('start'),
   padding: z.number().min(0).default(0),
+  wrap: z.boolean().default(true),
+  /** Gedeelde visuele styling — zie boxStyle.ts. */
+  style: BoxStyleSchema.optional(),
 });
 export type LayoutRowProps = z.infer<typeof LayoutRowPropsSchema>;
 
