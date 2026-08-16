@@ -360,11 +360,102 @@ async function handleBuild(
   };
 }
 
+async function handleExpose(apiKey: string, sandboxId: string) {
+  const t0 = Date.now();
+  const timings: Record<string, number> = {};
+  const logs: StepLog[] = [];
+  let sandbox: Sandbox | null = null;
+  let exposeUrl: string | null = null;
+  let error: string | null = null;
+
+  try {
+    const tConn = Date.now();
+    sandbox = await Sandbox.connect(sandboxId);
+    timings.sandbox_connect_ms = Date.now() - tConn;
+
+    // Start static HTTP server op :8080 en wacht tot poort luistert.
+    // `nohup` + `disown` zodat proces overleeft ná deze commands.run() shell exit.
+    // Als server al draait vanuit een eerdere expose, is dat prima (curl slaagt).
+    const ok = await runStep(
+      sandbox,
+      'start_static_server',
+      `bash -c '
+set -e
+if curl -sf -o /dev/null http://127.0.0.1:8080/; then
+  echo "[expose] server already running"
+else
+  cd /home/user/build/dist
+  nohup python3 -m http.server 8080 --bind 0.0.0.0 > /tmp/server.log 2>&1 &
+  disown
+  for i in $(seq 1 15); do
+    if curl -sf -o /dev/null http://127.0.0.1:8080/; then
+      echo "[expose] server ready after \${i}s"
+      break
+    fi
+    sleep 1
+  done
+fi
+curl -sf http://127.0.0.1:8080/ | head -1
+'`,
+      30_000,
+      logs,
+      timings,
+    );
+    if (!ok) throw new Error('step_failed:start_static_server');
+
+    // E2B v2 SDK: getHost(port) geeft publieke URL. Fallback op oudere API-namen.
+    const tHost = Date.now();
+    const sb = sandbox as unknown as { getHost?: (p: number) => string | Promise<string>; getHostname?: (p: number) => string | Promise<string> };
+    if (typeof sb.getHost === 'function') {
+      exposeUrl = 'https://' + (await sb.getHost(8080));
+    } else if (typeof sb.getHostname === 'function') {
+      exposeUrl = 'https://' + (await sb.getHostname(8080));
+    } else {
+      throw new Error('sdk_no_getHost_or_getHostname');
+    }
+    timings.get_host_ms = Date.now() - tHost;
+  } catch (e) {
+    error = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+  }
+  // Belangrijk: sandbox NIET killen — preview-host houdt hem live tot destroy.
+
+  return {
+    ok: !error,
+    phase: 'expose',
+    sandbox_id: sandboxId,
+    expose_url: exposeUrl,
+    error,
+    duration_total_ms: Date.now() - t0,
+    timings,
+    logs,
+  };
+}
+
+async function handleDestroy(apiKey: string, sandboxId: string) {
+  const t0 = Date.now();
+  let sandbox: Sandbox | null = null;
+  let error: string | null = null;
+  try {
+    sandbox = await Sandbox.connect(sandboxId);
+    await sandbox.kill();
+  } catch (e) {
+    error = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+  }
+  return {
+    ok: !error,
+    phase: 'destroy',
+    sandbox_id: sandboxId,
+    error,
+    duration_total_ms: Date.now() - t0,
+  };
+}
+
 async function handleCapture(
   apiKey: string,
   supabaseUrl: string,
   serviceKey: string,
   sandboxId: string,
+  keepAlive = false,
 ) {
   const t0 = Date.now();
   const jobId = crypto.randomUUID();
@@ -473,7 +564,7 @@ echo "[shell] done"
   } catch (e) {
     error = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
   } finally {
-    if (sandbox) {
+    if (sandbox && !keepAlive) {
       try { await sandbox.kill(); } catch { /* ignore */ }
     }
   }
@@ -483,6 +574,7 @@ echo "[shell] done"
     phase: 'capture',
     job_id: jobId,
     sandbox_id: sandboxId,
+    kept_alive: keepAlive,
     error,
     duration_total_ms: Date.now() - t0,
     timings,
@@ -522,7 +614,7 @@ Deno.serve(async (req: Request) => {
     );
   }
 
-  let body: { phase?: string; sandbox_id?: string; archive_path?: string } = {};
+  let body: { phase?: string; sandbox_id?: string; archive_path?: string; keep_alive?: boolean } = {};
   try {
     body = await req.json();
   } catch {
@@ -560,7 +652,33 @@ Deno.serve(async (req: Request) => {
           { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } },
         );
       }
-      const result = await handleCapture(apiKey, supabaseUrl, serviceKey, body.sandbox_id);
+      const result = await handleCapture(
+        apiKey, supabaseUrl, serviceKey, body.sandbox_id, Boolean(body.keep_alive),
+      );
+      return new Response(JSON.stringify(result, null, 2), {
+        headers: { ...CORS, 'Content-Type': 'application/json' },
+      });
+    }
+    if (body.phase === 'expose') {
+      if (!body.sandbox_id) {
+        return new Response(
+          JSON.stringify({ ok: false, error: 'expose_requires_sandbox_id' }),
+          { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } },
+        );
+      }
+      const result = await handleExpose(apiKey, body.sandbox_id);
+      return new Response(JSON.stringify(result, null, 2), {
+        headers: { ...CORS, 'Content-Type': 'application/json' },
+      });
+    }
+    if (body.phase === 'destroy') {
+      if (!body.sandbox_id) {
+        return new Response(
+          JSON.stringify({ ok: false, error: 'destroy_requires_sandbox_id' }),
+          { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } },
+        );
+      }
+      const result = await handleDestroy(apiKey, body.sandbox_id);
       return new Response(JSON.stringify(result, null, 2), {
         headers: { ...CORS, 'Content-Type': 'application/json' },
       });
@@ -569,7 +687,7 @@ Deno.serve(async (req: Request) => {
       JSON.stringify({
         ok: false,
         error: 'unknown_phase',
-        hint: 'POST { "phase": "prepare" } OR { "phase": "build", sandbox_id, archive_path } OR { "phase": "capture", sandbox_id }',
+        hint: 'POST { "phase": "prepare" | "build" | "capture" | "expose" | "destroy", ... }',
       }),
       { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } },
     );

@@ -14,7 +14,12 @@ param(
   [Parameter(Mandatory=$true)]
   [string]$ArchivePath,
 
-  [string]$ProjectRef = "ltzzxjrnhfcilfplpoep"
+  [string]$ProjectRef = "ltzzxjrnhfcilfplpoep",
+
+  # Als aanwezig: capture-phase kilt de sandbox NIET, zodat preview-host
+  # er via phase="expose" naar kan connecten. Vergeet niet later handmatig
+  # via phase="destroy" te killen (of E2B doet dat na 30min timeout).
+  [switch]$KeepAlive
 )
 
 $ErrorActionPreference = "Stop"
@@ -103,6 +108,7 @@ Write-Host "(dit duurt normaal 40-90s)"
 $captureBody = ConvertTo-Json @{
   phase      = "capture"
   sandbox_id = $sandboxId
+  keep_alive = [bool]$KeepAlive
 } -Compress
 $capture = Post-Phase -Body $captureBody
 
@@ -125,6 +131,13 @@ if ($capture.ok -and $capture.screenshots) {
   Write-Host "  $($capture.screenshots.mobile_signed_url)"
   Write-Host ""
   Write-Host "Totalen: prepare $($prepare.duration_total_ms)ms + build $($build.duration_total_ms)ms + capture $($capture.duration_total_ms)ms" -ForegroundColor Gray
+  if ($KeepAlive) {
+    Write-Host ""
+    Write-Host "Sandbox blijft leven (kept_alive=true). Sandbox_id voor preview-host:" -ForegroundColor Yellow
+    Write-Host "  $sandboxId" -ForegroundColor Yellow
+    Write-Host "Plak in preview-host (mode: remote) en klik 'Expose in iframe'." -ForegroundColor Yellow
+    Write-Host "Vergeet niet later 'Destroy sandbox' of E2B doet het na 30min timeout." -ForegroundColor Gray
+  }
 } else {
   Write-Host "CAPTURE niet OK. Error: $($capture.error)" -ForegroundColor Red
   Write-Host "Zie logs hierboven voor de crashende stap." -ForegroundColor Yellow
