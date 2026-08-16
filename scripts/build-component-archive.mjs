@@ -150,19 +150,37 @@ console.log(`[4/5] Fixture gekopieerd → src/fixtures/travel.json`);
 // -----------------------------------------------------------------------------
 
 const outTar = join(OUT_DIR, `component-${manifest.id}-${STAMP}.tar.gz`);
-try {
-  // POSIX-paths (forward slashes) voor cross-tar-compat:
-  //   - Windows bsdtar (built-in): accepteert beide, kent --force-local NIET
-  //   - mingw/git-bash tar:        interpreteert 'C:' als remote host tenzij POSIX
-  // Werkt op beide zonder speciale flags.
+{
+  // Cross-tar compat. Er zijn twee Windows-tar-varianten die elkaar bijten:
+  //   - Windows built-in bsdtar : accepteert POSIX-paths, kent --force-local NIET
+  //   - mingw/git-bash tar (GNU): interpreteert 'C:' als remote host tenzij --force-local
+  // Strategie: probeer eerst zonder flag; als tar-error `resolve failed` / `connect`
+  // (typische mingw-melding), retry met --force-local.
   const posixOut = outTar.replace(/\\/g, '/');
   const posixWork = workDir.replace(/\\/g, '/');
-  execSync(
-    `tar -czf "${posixOut}" --exclude=node_modules --exclude=dist --exclude=.git -C "${posixWork}" .`,
-    { stdio: 'inherit' },
-  );
-} catch (e) {
-  fail(`tar-commando faalde: ${e.message}`);
+  const base = `-czf "${posixOut}" --exclude=node_modules --exclude=dist --exclude=.git -C "${posixWork}" .`;
+
+  let ok = false;
+  try {
+    execSync(`tar ${base}`, { stdio: 'pipe' });
+    ok = true;
+  } catch (e1) {
+    const stderr1 = String(e1.stderr || '');
+    // Retry met --force-local (GNU/mingw pad)
+    try {
+      execSync(`tar --force-local ${base}`, { stdio: 'pipe' });
+      ok = true;
+      console.log('[tar] fallback --force-local geslaagd (GNU/mingw-tar variant)');
+    } catch (e2) {
+      const stderr2 = String(e2.stderr || '');
+      fail(
+        `tar-commando faalde in beide varianten.\n` +
+        `Plain: ${stderr1.slice(-400)}\n` +
+        `--force-local: ${stderr2.slice(-400)}`,
+      );
+    }
+  }
+  if (!ok) fail('tar unexpected state');
 }
 
 // Meta
