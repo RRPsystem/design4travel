@@ -4,22 +4,23 @@
 #   1. Netlify dashboard → "Add new site" → "Import an existing project"
 #   2. Kies GitHub → repository RRPsystem/design4travel
 #   3. Site settings → Build & deploy:
-#        Base directory: packages/studio4-preview-host
-#      (Netlify pikt dan onderstaande netlify.toml op vanuit die dir)
+#        Package directory: packages/studio4-preview-host
+#      (Netlify laadt dan onderstaande netlify.toml, maar runt vanuit repo-root.)
 #   4. Site settings → Environment variables:
 #        VITE_SUPABASE_URL       = https://ltzzxjrnhfcilfplpoep.supabase.co
 #        VITE_SUPABASE_ANON_KEY  = sb_publishable_...
 #   5. Deploy.
 #
-# Root netlify.toml (apps/app / design4travel.netlify.app) wordt hierdoor
-# NIET beïnvloed — Netlify laadt subsite-toml alleen als `base` gezet is.
+# Root netlify.toml (apps/app / design4travel.netlify.app) wordt hierdoor NIET
+# beïnvloed omdat deze netlify.toml alleen actief is als de site 'packagePath'
+# op packages/studio4-preview-host heeft staan.
 
 [build]
-  # Runt vanuit base=packages/studio4-preview-host. Ga naar repo-root, install
-  # alle workspaces (voor @design4/studio4-sdk workspace-dep), build alleen
-  # deze subsite. Publish is relatief aan base, dus dist/ hier onder.
-  command = "cd ../.. && npm install --legacy-peer-deps && npm run build --workspace packages/studio4-preview-host"
-  publish = "dist"
+  # Belangrijke observatie uit Netlify build-log: cwd is /opt/build/repo (repo-
+  # root), NIET de package-dir. Paden dus root-relatief houden. Workspace-install
+  # vanuit root voor @design4/studio4-sdk workspace-dep.
+  command = "npm install --legacy-peer-deps && npm run build --workspace packages/studio4-preview-host"
+  publish = "packages/studio4-preview-host/dist"
 
 [build.environment]
   NODE_VERSION = "20"
