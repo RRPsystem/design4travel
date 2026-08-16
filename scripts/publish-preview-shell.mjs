@@ -18,7 +18,7 @@
  */
 
 import { execSync } from 'node:child_process';
-import { readFileSync, mkdirSync, existsSync, rmSync, statSync } from 'node:fs';
+import { cpSync, readFileSync, mkdirSync, existsSync, rmSync, statSync, copyFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -26,6 +26,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
 const SHELL_DIR = join(REPO_ROOT, 'packages', 'preview-shell');
 const OUT_DIR = join(REPO_ROOT, '.spike-build');
+const CANONICAL_FIXTURE = join(
+  REPO_ROOT, 'packages', 'content-fixtures', 'travel',
+  'fixture-safari-zuid-afrika-mauritius-001.json',
+);
 
 function fail(msg) { console.error('ERROR:', msg); process.exit(1); }
 
@@ -46,11 +50,31 @@ mkdirSync(OUT_DIR, { recursive: true });
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const outTar = join(OUT_DIR, `preview-shell-v${version}-${stamp}.tar.gz`);
 
+// Kopieer preview-shell naar tmp-dir, vervang de placeholder-fixture met de
+// canonical safari-fixture (anders toont de gerenderde app de placeholder-
+// tekst in plaats van echte reisdata).
+const workDir = join(OUT_DIR, `preview-shell-work-${stamp}`);
+if (existsSync(workDir)) rmSync(workDir, { recursive: true, force: true });
+cpSync(SHELL_DIR, workDir, {
+  recursive: true,
+  filter: (src) => {
+    const skip = ['node_modules', 'dist', '.git', '.spike-build'];
+    return !skip.some((s) => src.endsWith(s) || src.includes(`${s}/`) || src.includes(`${s}\\`));
+  },
+});
+
+if (existsSync(CANONICAL_FIXTURE)) {
+  copyFileSync(CANONICAL_FIXTURE, join(workDir, 'src', 'fixtures', 'travel.json'));
+  console.log(`[.] Canonical safari-fixture ingebakken over placeholder`);
+} else {
+  console.warn(`[.] WAARSCHUWING: canonical fixture niet gevonden op ${CANONICAL_FIXTURE}; template bevat placeholder-tekst`);
+}
+
 // Tar met cross-tar fallback (zelfde patroon als build-component-archive)
 {
   const posixOut = outTar.replace(/\\/g, '/');
-  const posixShell = SHELL_DIR.replace(/\\/g, '/');
-  const base = `-czf "${posixOut}" --exclude=node_modules --exclude=dist --exclude=.git -C "${posixShell}" .`;
+  const posixWork = workDir.replace(/\\/g, '/');
+  const base = `-czf "${posixOut}" --exclude=node_modules --exclude=dist --exclude=.git -C "${posixWork}" .`;
   try {
     execSync(`tar ${base}`, { stdio: 'pipe' });
   } catch {
@@ -61,6 +85,9 @@ const outTar = join(OUT_DIR, `preview-shell-v${version}-${stamp}.tar.gz`);
     }
   }
 }
+
+// Cleanup workdir
+try { rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
 const size = statSync(outTar).size;
 console.log(`[1/2] Preview-shell v${version} → ${outTar} (${(size / 1024).toFixed(1)} KB)`);
