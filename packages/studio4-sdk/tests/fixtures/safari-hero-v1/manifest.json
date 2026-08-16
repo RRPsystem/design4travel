@@ -1,0 +1,43 @@
+{
+  "sdkVersion": "1.0",
+  "id": "safari-hero-v1",
+  "displayName": "Safari Hero",
+  "componentName": "SafariHeroSection",
+  "fileName": "SafariHeroSection.tsx",
+  "registryKey": "safari_hero",
+  "category": "hero",
+  "producedBy": {
+    "engine": "studio4-component",
+    "iteration": 1,
+    "parentCallId": "manual_4a_fixture",
+    "sourceReferenceId": "ref_manual_safari_hero"
+  },
+  "requestedImports": [
+    "react",
+    "lucide-react",
+    "../../lib/imageUtils",
+    "./types"
+  ],
+  "consumes": {
+    "brand": ["primary_color", "name", "tagline", "phone"],
+    "primaryColor": true,
+    "pageContent": ["hero"]
+  },
+  "media": [
+    { "role": "background", "kind": "image", "minWidth": 1600 },
+    { "role": "foreground", "kind": "image", "cutout": true, "optional": true }
+  ],
+  "pageLevel": {
+    "requiresTransparentNav": true,
+    "recommendedPage": "home",
+    "reviewerNote": "Deze sectie is ontworpen voor een pagina waar transparentNav={true} is gezet op SiteLayout."
+  },
+  "responsive": {
+    "breakpoints": ["sm", "md", "lg", "xl", "2xl"],
+    "mobileStrategy": "stacked-verticalCenter"
+  },
+  "a11y": {
+    "landmarks": ["banner"],
+    "supportsReducedMotion": true
+  }
+}
