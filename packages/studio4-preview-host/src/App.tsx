@@ -5,6 +5,7 @@ import { MOCK_BRAND } from './mocks/brand';
 import { MOCK_PAGE_CONTENT } from './mocks/pageContent';
 import { LoginView } from './features/auth/LoginView';
 import { useSession } from './features/auth/useSession';
+import { GenerateView } from './features/generate/GenerateView';
 import { supabase, SUPABASE_CONFIG_OK } from './lib/supabase';
 
 /**
@@ -19,7 +20,7 @@ import { supabase, SUPABASE_CONFIG_OK } from './lib/supabase';
  * meegestuurd als Bearer.
  */
 
-type Mode = 'mock' | 'remote';
+type Mode = 'mock' | 'remote' | 'generate';
 type Viewport = 'desktop' | 'mobile';
 
 const VIEWPORTS: Record<Viewport, { label: string; width: number }> = {
@@ -139,7 +140,7 @@ function AuthedApp({ accessToken, email }: { accessToken: string; email: string 
           <div className="flex items-center gap-4 text-xs">
             <div className="flex items-center gap-2">
               <span className="text-gray-400">Mode:</span>
-              {(['mock', 'remote'] as Mode[]).map((m) => (
+              {(['mock', 'remote', 'generate'] as Mode[]).map((m) => (
                 <button
                   key={m}
                   type="button"
@@ -223,7 +224,11 @@ function AuthedApp({ accessToken, email }: { accessToken: string; email: string 
         )}
       </div>
 
-      {/* Viewport-frame */}
+      {/* Generate-mode: eigen surface, geen viewport-frame */}
+      {mode === 'generate' && <GenerateView accessToken={accessToken} />}
+
+      {/* Viewport-frame voor mock + remote */}
+      {mode !== 'generate' && (
       <div className="flex justify-center py-6">
         <div
           className="bg-white shadow-2xl overflow-hidden"
@@ -255,6 +260,7 @@ function AuthedApp({ accessToken, email }: { accessToken: string; email: string 
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }
