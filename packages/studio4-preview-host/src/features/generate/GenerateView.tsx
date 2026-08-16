@@ -62,6 +62,15 @@ export function GenerateView({ accessToken }: { accessToken: string }) {
   const [pipelineStatus, setPipelineStatus] = useState<string>('');
   const [exposeUrl, setExposeUrl] = useState<string | null>(null);
   const [sandboxId, setSandboxId] = useState<string | null>(null);
+  const [referencePath, setReferencePath] = useState<string | null>(null);
+  const [captureJobId, setCaptureJobId] = useState<string | null>(null);
+  const [compareBusy, setCompareBusy] = useState(false);
+  const [compareResult, setCompareResult] = useState<{
+    match_score: number;
+    summary: string;
+    differences: Array<{ area: string; severity: string; suggestion: string }>;
+  } | null>(null);
+  const [compareStatus, setCompareStatus] = useState<string>('');
 
   async function runPipeline() {
     if (!result?.final_package) return;
@@ -96,7 +105,16 @@ export function GenerateView({ accessToken }: { accessToken: string }) {
       }).then((r) => r.json());
       if (!build.ok) { setPipelineStatus(`build_from_ai faalde: ${build.error ?? 'onbekend'}`); return; }
 
-      // 3) expose
+      // 3) capture (keep_alive) — schiet meteen desktop+mobile screenshot voor visual-compare
+      setPipelineStatus('Screenshots maken voor visual-compare (7s)…');
+      const cap = await fetch(`${SUPABASE_URL}/functions/v1/sandbox-build-trigger`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phase: 'capture', sandbox_id: sid, keep_alive: true }),
+      }).then((r) => r.json());
+      if (cap.ok && cap.job_id) setCaptureJobId(cap.job_id as string);
+
+      // 4) expose
       setPipelineStatus('Server starten + publieke URL genereren (3s)…');
       const exp = await fetch(`${SUPABASE_URL}/functions/v1/sandbox-build-trigger`, {
         method: 'POST',
@@ -126,6 +144,36 @@ export function GenerateView({ accessToken }: { accessToken: string }) {
     setPipelineStatus('Sandbox destroyed.');
   }
 
+  async function compareWithReference() {
+    if (!referencePath || !captureJobId) {
+      setCompareStatus('Nog geen screenshot beschikbaar — draai eerst de auto-pipeline.');
+      return;
+    }
+    setCompareBusy(true);
+    setCompareStatus('Claude vision vergelijkt reference met sandbox-render… (5-15s)');
+    setCompareResult(null);
+    try {
+      const r = await fetch(`${SUPABASE_URL}/functions/v1/visual-compare`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reference_path: referencePath,
+          screenshot_path: `job/${captureJobId}/desktop.png`,
+        }),
+      }).then((r) => r.json());
+      if (!r.ok || !r.feedback) {
+        setCompareStatus(`Compare faalde: ${r.error ?? 'onbekend'}`);
+        return;
+      }
+      setCompareResult(r.feedback);
+      setCompareStatus(`Klaar in ${r.duration_ms}ms.`);
+    } catch (e) {
+      setCompareStatus(`Fetch faalde: ${(e as Error).message}`);
+    } finally {
+      setCompareBusy(false);
+    }
+  }
+
   async function generate() {
     if (!file) { setStatus('Kies eerst een reference-image'); return; }
     setBusy(true);
@@ -139,6 +187,11 @@ export function GenerateView({ accessToken }: { accessToken: string }) {
         .from('design-references')
         .upload(path, file, { contentType: file.type, upsert: false });
       if (upl.error) { setStatus(`Upload faalde: ${upl.error.message}`); setBusy(false); return; }
+      setReferencePath(path);
+      // Reset vorige compare-state bij nieuwe generate
+      setCompareResult(null);
+      setCompareStatus('');
+      setCaptureJobId(null);
 
       // 2. Call Edge Function
       setStatus('Claude analyseert reference + genereert pakket… (kan 30-90s duren)');
@@ -318,6 +371,62 @@ export function GenerateView({ accessToken }: { accessToken: string }) {
                     className="block border-0 w-full"
                     style={{ height: '900px' }}
                   />
+                </div>
+              )}
+
+              {/* Render-and-compare (iteratie 4c.3) */}
+              {exposeUrl && captureJobId && (
+                <div className="bg-gray-900 border border-gray-800 rounded p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs uppercase tracking-widest text-gray-500">
+                      Vergelijk render met reference (Claude vision)
+                    </div>
+                    <button
+                      type="button"
+                      onClick={compareWithReference}
+                      disabled={compareBusy}
+                      className="inline-flex items-center gap-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-100 px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+                    >
+                      {compareBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                      {compareBusy ? 'Vergelijken…' : 'Vergelijk met reference'}
+                    </button>
+                  </div>
+                  {compareStatus && (
+                    <div className="text-xs text-gray-400 font-mono break-all">{compareStatus}</div>
+                  )}
+                  {compareResult && (
+                    <div className="space-y-3">
+                      <div className="flex items-baseline gap-4">
+                        <div className="text-3xl font-bold" style={{
+                          color: compareResult.match_score >= 70 ? '#4ade80'
+                            : compareResult.match_score >= 40 ? '#facc15'
+                            : '#f87171',
+                        }}>
+                          {compareResult.match_score}/100
+                        </div>
+                        <div className="text-sm text-gray-300 flex-1">{compareResult.summary}</div>
+                      </div>
+                      {compareResult.differences.length > 0 && (
+                        <ul className="space-y-2 text-xs">
+                          {compareResult.differences.map((d, i) => (
+                            <li key={i} className="rounded bg-gray-800 border border-gray-700 p-2">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className={
+                                  'inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ' + (
+                                    d.severity === 'critical' ? 'bg-red-900 text-red-200'
+                                    : d.severity === 'significant' ? 'bg-yellow-900 text-yellow-200'
+                                    : 'bg-gray-700 text-gray-300'
+                                  )
+                                }>{d.severity}</span>
+                                <span className="text-gray-400">{d.area}</span>
+                              </div>
+                              <div className="text-gray-200">{d.suggestion}</div>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
