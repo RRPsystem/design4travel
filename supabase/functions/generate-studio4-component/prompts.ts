@@ -116,10 +116,12 @@ export function <ComponentName>({ brand, primaryColor, pageContent }: SectionPro
 
 ## Kwaliteitseisen
 
+- **Nederlands als standaardtaal**: alle zichtbare content (titels, subtitles, CTA-labels, feature-tekst, tagline-chips) MOET in het Nederlands zijn, ook als de reference Engelstalig is. Alleen als de gebruiker expliciet om een andere taal vraagt: die taal.
+- **Echte image-URLs — nooit alt-only of relatieve paden**: elke \`<img>\` MOET een volledig \`https://...\`-URL hebben uit \`images.unsplash.com\` (bijv. \`https://images.unsplash.com/photo-1516426122078-c23e76319801\`), \`images.pexels.com\`, of \`tr2storage.blob.core.windows.net\`. Gebruik betekenisvolle Unsplash photo-IDs die passen bij het onderwerp (safari, natuur, reis). NOOIT \`/foo.jpg\`, \`./bar.png\`, of \`<img alt="..." />\` zonder src.
 - **Full-bleed visuals**: hero's mogen \`min-h-screen\` en absolute layering gebruiken.
 - **Responsive**: gebruik Tailwind breakpoints (\`sm md lg xl 2xl\`).
 - **Brand-aware**: primaryColor via inline \`style={{ backgroundColor: primaryColor }}\`.
-- **Content-binding**: haal titel/subtitle/CTA uit \`pageContent[<key>]\` met defensieve defaults.
+- **Content-binding**: haal titel/subtitle/CTA uit \`pageContent[<key>]\` met defensieve defaults (in het Nederlands).
 - **Fixture-aware**: als je een travel-fixture context krijgt, laat titel/subtitle daarnaar refereren.
 
 ## Output
@@ -168,6 +170,60 @@ export function buildInitialUserMessage(
         '',
         'Emit één pakket via de tool. Denk aan POLICY_V1_0.',
       ].filter(Boolean).join('\n'),
+    },
+  ];
+  return { role: 'user', content: parts };
+}
+
+/**
+ * Vervolg-prompt in "improve mode": AI krijgt het vorige pakket, optioneel
+ * de visual-compare-feedback, en de user's chat-verzoek. Emit een verbeterde
+ * versie die de user-instructie én de feedback verwerkt.
+ */
+export function buildRevisionUserMessage(
+  imageUrl: string,
+  chatPrompt: string,
+  previousManifest: Record<string, unknown>,
+  previousComponentTsx: string,
+  previousFeedback: {
+    match_score: number;
+    summary: string;
+    differences: Array<{ area: string; severity: string; suggestion: string }>;
+  } | null,
+) {
+  const feedbackLines = previousFeedback
+    ? [
+        '',
+        'Visuele vergelijking van vorige versie tegen reference (Claude vision):',
+        `- Match-score: ${previousFeedback.match_score}/100`,
+        `- Samenvatting: ${previousFeedback.summary}`,
+        ...previousFeedback.differences.map((d) => `- [${d.severity}] ${d.area}: ${d.suggestion}`),
+      ]
+    : [];
+
+  const parts: Array<Record<string, unknown>> = [
+    { type: 'image', source: { type: 'url', url: imageUrl } },
+    {
+      type: 'text',
+      text: [
+        'Design-referentie hierboven (dezelfde als vorige keer).',
+        '',
+        'Vorige versie van je pakket:',
+        '```json',
+        JSON.stringify(previousManifest, null, 2),
+        '```',
+        '',
+        '```tsx',
+        previousComponentTsx,
+        '```',
+        ...feedbackLines,
+        '',
+        chatPrompt
+          ? `De gebruiker vraagt nu: "${chatPrompt}"`
+          : 'Verbeter deze versie op basis van de visuele feedback.',
+        '',
+        'Emit een verbeterde versie via de tool. Blijf binnen POLICY_V1_0. Behoud wat goed was, verander alleen wat de gebruiker vraagt en/of wat de feedback aangeeft.',
+      ].join('\n'),
     },
   ];
   return { role: 'user', content: parts };

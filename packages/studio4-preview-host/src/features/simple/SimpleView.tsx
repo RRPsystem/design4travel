@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Upload, Sparkles, Loader2, Monitor, Smartphone, RotateCcw } from 'lucide-react';
+import { Upload, Sparkles, Loader2, Monitor, Smartphone, RotateCcw, Send } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 
 /**
@@ -46,6 +46,13 @@ function friendlyError(rawError: string | null | undefined): string {
   return 'Er ging iets mis. Probeer het opnieuw.';
 }
 
+interface PkgFiles { manifest: Record<string, unknown>; componentTsx: string; }
+interface CompareFeedback {
+  match_score: number;
+  summary: string;
+  differences: Array<{ area: string; severity: string; suggestion: string }>;
+}
+
 export function SimpleView({ accessToken }: { accessToken: string }) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [file, setFile] = useState<File | null>(null);
@@ -53,8 +60,19 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
   const [statusText, setStatusText] = useState('');
   const [errorText, setErrorText] = useState<string | null>(null);
   const [exposeUrl, setExposeUrl] = useState<string | null>(null);
+  const [iframeKey, setIframeKey] = useState(0); // force iframe reload bij revise
   const [viewport, setViewport] = useState<Viewport>('desktop');
   const activeSandboxId = useRef<string | null>(null);
+
+  // Revise/chat + auto-repair
+  const [currentPackage, setCurrentPackage] = useState<PkgFiles | null>(null);
+  const [referencePath, setReferencePath] = useState<string | null>(null);
+  const [captureJobId, setCaptureJobId] = useState<string | null>(null);
+  const autoRepairedRef = useRef<boolean>(false); // max 1 auto-repair per generate
+  const [chatInput, setChatInput] = useState('');
+  const [reviseBusy, setReviseBusy] = useState(false);
+  const [reviseStatus, setReviseStatus] = useState<string>('');
+  const [autoRepairBusy, setAutoRepairBusy] = useState(false);
 
   // Destroy sandbox bij tab-sluiten. Gebruik fetch met keepalive zodat de call
   // ook bij page-unload doorgaat (i.p.v. sendBeacon die geen Authorization
@@ -92,10 +110,14 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
   async function createDesign() {
     if (!file) return;
 
-    // Nieuwe generatie: vorige sandbox eerst opruimen
+    // Nieuwe generatie: vorige sandbox eerst opruimen + state reset
     if (activeSandboxId.current) await destroyIfActive();
     setExposeUrl(null);
     setErrorText(null);
+    setCurrentPackage(null);
+    setReferencePath(null);
+    setCaptureJobId(null);
+    autoRepairedRef.current = false;
     setPhase('generating');
 
     try {
@@ -106,6 +128,7 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
         .from('design-references')
         .upload(path, file, { contentType: file.type, upsert: false });
       if (upl.error) throw new Error(`upload_${upl.error.message}`);
+      setReferencePath(path);
 
       // 2. AI genereert pakket
       setStatusText('AI ontwerpt je component…');
@@ -115,6 +138,7 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
         body: JSON.stringify({ reference_path: path, chat_prompt: prompt, fixture_hint: '' }),
       }).then((r) => r.json());
       if (!genR.ok || !genR.final_package) throw new Error(genR.error ?? 'generate_failed');
+      setCurrentPackage(genR.final_package as PkgFiles);
 
       // 3. Sandbox aanmaken
       setStatusText('Voorbereiden preview-omgeving…');
@@ -142,7 +166,16 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
       }).then((r) => r.json());
       if (!build.ok) throw new Error(build.error ?? 'build_failed');
 
-      // 5. Expose
+      // 5. Capture (keep_alive) — screenshot voor auto-repair-vergelijking
+      setStatusText('Screenshots maken…');
+      const cap = await fetch(`${SUPABASE_URL}/functions/v1/sandbox-build-trigger`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phase: 'capture', sandbox_id: prep.sandbox_id, keep_alive: true }),
+      }).then((r) => r.json());
+      if (cap.ok && cap.job_id) setCaptureJobId(cap.job_id as string);
+
+      // 6. Expose
       setStatusText('Live zetten…');
       const exp = await fetch(`${SUPABASE_URL}/functions/v1/sandbox-build-trigger`, {
         method: 'POST',
@@ -152,6 +185,7 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
       if (!exp.ok || !exp.expose_url) throw new Error(exp.error ?? 'expose_failed');
 
       setExposeUrl(exp.expose_url as string);
+      setIframeKey((k) => k + 1);
       setStatusText('');
       setPhase('previewing');
     } catch (e) {
@@ -161,6 +195,113 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
     }
   }
 
+  /**
+   * Auto-repair: nadat preview live is, silently vraag Claude vision om te
+   * vergelijken; als match_score < 60 met een critical/significant issue,
+   * doe één auto-repair (nieuwe generate met previous_package + feedback).
+   */
+  useEffect(() => {
+    if (phase !== 'previewing') return;
+    if (autoRepairedRef.current) return;
+    if (!referencePath || !captureJobId || !currentPackage) return;
+
+    autoRepairedRef.current = true; // slechts één poging per generate
+    (async () => {
+      setAutoRepairBusy(true);
+      try {
+        const compR = await fetch(`${SUPABASE_URL}/functions/v1/visual-compare`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reference_path: referencePath,
+            screenshot_path: `job/${captureJobId}/desktop.png`,
+          }),
+        }).then((r) => r.json());
+        if (!compR.ok || !compR.feedback) return;
+        const fb = compR.feedback as CompareFeedback;
+        const needsRepair =
+          fb.match_score < 60 &&
+          fb.differences.some((d) => d.severity === 'critical' || d.severity === 'significant');
+        if (!needsRepair) return;
+
+        // Auto-repair: nieuwe generate met previous package + feedback
+        await runRevision('', fb, /* isAutoRepair */ true);
+      } catch { /* fail-open */ }
+      finally {
+        setAutoRepairBusy(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, referencePath, captureJobId, currentPackage]);
+
+  async function runRevision(
+    userPrompt: string,
+    feedback: CompareFeedback | null,
+    isAutoRepair: boolean,
+  ) {
+    if (!currentPackage || !referencePath || !activeSandboxId.current) return;
+    const sid = activeSandboxId.current;
+    if (!isAutoRepair) setReviseBusy(true);
+    setReviseStatus(isAutoRepair ? 'AI verfijnt je ontwerp…' : 'AI past je ontwerp aan…');
+
+    try {
+      // 1. generate met previous_package
+      const genR = await fetch(`${SUPABASE_URL}/functions/v1/generate-studio4-component`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reference_path: referencePath,
+          chat_prompt: userPrompt,
+          fixture_hint: '',
+          previous_package: currentPackage,
+          previous_feedback: feedback ?? undefined,
+        }),
+      }).then((r) => r.json());
+      if (!genR.ok || !genR.final_package) throw new Error(genR.error ?? 'generate_failed');
+      const newPkg = genR.final_package as PkgFiles;
+      setCurrentPackage(newPkg);
+
+      // 2. rebuild in bestaande sandbox
+      setReviseStatus('Aanpassing bouwen…');
+      const build = await fetch(`${SUPABASE_URL}/functions/v1/sandbox-build-trigger`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phase: 'build_from_ai',
+          sandbox_id: sid,
+          manifest: newPkg.manifest,
+          component_tsx: newPkg.componentTsx,
+          preview_shell_version: PREVIEW_SHELL_VERSION,
+          fixture_path: null,
+        }),
+      }).then((r) => r.json());
+      if (!build.ok) throw new Error(build.error ?? 'build_failed');
+
+      // 3. expose (python server draait al; getHost is idempotent) + iframe reload
+      const exp = await fetch(`${SUPABASE_URL}/functions/v1/sandbox-build-trigger`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phase: 'expose', sandbox_id: sid }),
+      }).then((r) => r.json());
+      if (exp.ok && exp.expose_url) {
+        setExposeUrl(exp.expose_url as string);
+      }
+      setIframeKey((k) => k + 1);
+      setReviseStatus('');
+    } catch (e) {
+      setReviseStatus(`Kon aanpassing niet uitvoeren: ${friendlyError((e as Error).message)}`);
+    } finally {
+      if (!isAutoRepair) setReviseBusy(false);
+    }
+  }
+
+  async function sendChat() {
+    const text = chatInput.trim();
+    if (!text || reviseBusy) return;
+    setChatInput('');
+    await runRevision(text, null, false);
+  }
+
   function reset() {
     destroyIfActive();
     setFile(null);
@@ -168,6 +309,12 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
     setExposeUrl(null);
     setErrorText(null);
     setStatusText('');
+    setCurrentPackage(null);
+    setReferencePath(null);
+    setCaptureJobId(null);
+    setChatInput('');
+    setReviseStatus('');
+    autoRepairedRef.current = false;
     setPhase('idle');
   }
 
@@ -244,17 +391,49 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
             </button>
           </div>
         </div>
+        {(autoRepairBusy || reviseBusy || reviseStatus) && (
+          <div className="border-b border-gray-800 bg-gray-900 px-6 py-2 flex items-center gap-2 text-xs text-gray-300">
+            {(autoRepairBusy || reviseBusy) && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            <span>{reviseStatus || 'AI verfijnt je ontwerp…'}</span>
+          </div>
+        )}
         <div className="flex-1 flex items-start justify-center py-6 px-6 overflow-auto">
           <div
             className="bg-white shadow-2xl overflow-hidden"
             style={{ width: `${vp.width}px`, maxWidth: '100%' }}
           >
             <iframe
+              key={iframeKey}
               title="Je ontwerp"
               src={exposeUrl}
               className="block border-0"
               style={{ width: `${vp.width}px`, height: viewport === 'mobile' ? '844px' : '900px' }}
             />
+          </div>
+        </div>
+        {/* Chat voor vervolgwijzigingen */}
+        <div className="border-t border-gray-800 px-6 py-3">
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+              }}
+              placeholder='Wijzig iets, bv. "titel groter" of "gebruik warmere kleuren"…'
+              disabled={reviseBusy || autoRepairBusy}
+              className="flex-1 rounded bg-gray-900 border border-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-white/60 focus:outline-none disabled:opacity-50"
+            />
+            <button
+              type="button"
+              onClick={sendChat}
+              disabled={reviseBusy || autoRepairBusy || !chatInput.trim()}
+              className="inline-flex items-center gap-2 rounded bg-white text-gray-900 px-4 py-2 text-sm font-semibold disabled:opacity-50"
+            >
+              {reviseBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              Verzenden
+            </button>
           </div>
         </div>
         <div className="border-t border-gray-800 px-6 py-3 flex items-center justify-end gap-2 text-xs">

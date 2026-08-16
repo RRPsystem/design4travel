@@ -21,6 +21,7 @@ import {
   SYSTEM_PROMPT,
   buildInitialUserMessage,
   buildRepairUserMessage,
+  buildRevisionUserMessage,
   EMIT_TOOL,
 } from './prompts.ts';
 import { callClaudeVision, type EmittedPackage } from './anthropic.ts';
@@ -149,7 +150,17 @@ Deno.serve(async (req: Request) => {
     );
   }
 
-  let body: { reference_path?: string; chat_prompt?: string; fixture_hint?: string } = {};
+  let body: {
+    reference_path?: string;
+    chat_prompt?: string;
+    fixture_hint?: string;
+    previous_package?: { manifest: Record<string, unknown>; componentTsx: string };
+    previous_feedback?: {
+      match_score: number;
+      summary: string;
+      differences: Array<{ area: string; severity: string; suggestion: string }>;
+    };
+  } = {};
   try { body = await req.json(); } catch {
     return new Response(JSON.stringify({ ok: false, error: 'invalid_json_body' }), {
       status: 400,
@@ -176,15 +187,29 @@ Deno.serve(async (req: Request) => {
       supabaseUrl, serviceKey, 'design-references', body.reference_path, 600,
     );
 
+    // Modus: initial (nieuwe generatie) of revision (verbetering op vorige)
+    const isRevision = Boolean(body.previous_package?.manifest && body.previous_package?.componentTsx);
+
     // Iteratie-loop
     let lastValidation: ValidationResult | null = null;
     let lastToolUseId: string | null = null;
     for (let i = 1; i <= MAX_ITERATIONS; i++) {
       const model = i === 1 ? 'claude-sonnet-5' : 'claude-opus-5';
+
+      const firstMessage = isRevision
+        ? buildRevisionUserMessage(
+            imageUrl,
+            body.chat_prompt ?? '',
+            body.previous_package!.manifest,
+            body.previous_package!.componentTsx,
+            body.previous_feedback ?? null,
+          )
+        : buildInitialUserMessage(imageUrl, body.chat_prompt ?? '', body.fixture_hint ?? '');
+
       const messages = i === 1
-        ? [buildInitialUserMessage(imageUrl, body.chat_prompt ?? '', body.fixture_hint ?? '')]
+        ? [firstMessage]
         : [
-            buildInitialUserMessage(imageUrl, body.chat_prompt ?? '', body.fixture_hint ?? ''),
+            firstMessage,
             {
               role: 'assistant',
               content: [{
