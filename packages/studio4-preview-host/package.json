@@ -1,0 +1,28 @@
+{
+  "name": "@design4/studio4-preview-host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Mini Vite+React app die een Design4-gegenereerd Studio4-component-pakket mount met mock SiteLayout, brand, pageContent en (optioneel) transparentNav. Draait geïsoleerd, geen Studio4-productiecredentials.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@design4/studio4-sdk": "*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "lucide-react": "^0.344.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.18",
+    "postcss": "^8.4.35",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.4.5",
+    "vite": "^5.4.2"
+  }
+}

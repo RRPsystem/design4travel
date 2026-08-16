@@ -6,6 +6,7 @@
     { "path": "./packages/data-bindings" },
     { "path": "./packages/renderer" },
     { "path": "./packages/studio4-sdk" },
+    { "path": "./packages/studio4-preview-host" },
     { "path": "./apps/app" }
   ]
 }

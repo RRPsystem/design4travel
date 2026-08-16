@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+/* Preview-host chrome (buiten de gemounte sectie) */
+.preview-chrome {
+  background: #0b0f19;
+  color: #e5e7eb;
+  border-bottom: 1px solid #1f2937;
+  font-family: system-ui, -apple-system, sans-serif;
+}
