@@ -9,8 +9,9 @@
 # gebruiken om alleen deploy-basis te bevestigen zonder een echte sandbox te starten.
 
 param(
+  # Bearer-token: user-JWT of service-role-key (dev-bypass). Anon key niet meer.
   [Parameter(Mandatory=$true)]
-  [string]$AnonKey,
+  [string]$BearerToken,
 
   [string]$ProjectRef = "ltzzxjrnhfcilfplpoep",
 
@@ -19,7 +20,7 @@ param(
 
 $baseUrl = "https://$ProjectRef.supabase.co/functions/v1"
 $headers = @{
-  "Authorization" = "Bearer $AnonKey"
+  "Authorization" = "Bearer $BearerToken"
   "Content-Type"  = "application/json"
 }
 

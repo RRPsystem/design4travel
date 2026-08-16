@@ -8,8 +8,12 @@
 #   .\scripts\run-spike.ps1 -AnonKey "sb_publishable_..." -ArchivePath "spike-sandbox-target-<stamp>.tar.gz"
 
 param(
+  # Bearer-token voor sandbox-build-trigger:
+  #   - user-JWT (via magic-link login op preview-host) → normale flow met rate-limits
+  #   - SUPABASE_SERVICE_ROLE_KEY → dev-bypass (geen rate-limits, ownership skip)
+  # De publishable/anon key wordt NIET meer geaccepteerd (401).
   [Parameter(Mandatory=$true)]
-  [string]$AnonKey,
+  [string]$BearerToken,
 
   [Parameter(Mandatory=$true)]
   [string]$ArchivePath,
@@ -25,7 +29,7 @@ param(
 $ErrorActionPreference = "Stop"
 $baseUrl = "https://$ProjectRef.supabase.co/functions/v1/sandbox-build-trigger"
 $headers = @{
-  "Authorization" = "Bearer $AnonKey"
+  "Authorization" = "Bearer $BearerToken"
   "Content-Type"  = "application/json"
 }
 
