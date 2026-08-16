@@ -3,19 +3,20 @@ import { Studio4SiteLayout } from './layout/Studio4SiteLayout';
 import { HelloSection } from './sections/HelloSection';
 import { MOCK_BRAND } from './mocks/brand';
 import { MOCK_PAGE_CONTENT } from './mocks/pageContent';
+import { LoginView } from './features/auth/LoginView';
+import { useSession } from './features/auth/useSession';
+import { supabase, SUPABASE_CONFIG_OK } from './lib/supabase';
 
 /**
- * Preview-host app met twee modes:
+ * Preview-host app met auth-gate + twee modes:
  *
  *   - `mock`   : Studio4SiteLayout + HelloSection lokaal gemount met MOCK data.
- *                Bewijst dat het SDK-contract in de preview-host werkt.
- *   - `remote` : Iframe naar een live sandbox-URL (van `phase:expose` op
- *                sandbox-build-trigger). Bewijst dat een gegenereerd pakket
- *                daadwerkelijk gerenderd wordt door Vite-build + Chromium in
- *                dezelfde pipeline die Design4 straks produceert.
+ *   - `remote` : Iframe naar een live sandbox-URL (phase="expose" via de
+ *                sandbox-build-trigger Edge Function).
  *
- * Iteratie 3: user vult sandbox_id handmatig in (uit run-spike.ps1 output).
- * Volgende iteratie: preview-host triggert de sandbox-flow zelf.
+ * Zonder ingelogde sessie: LoginView (magic-link). Sinds iteratie 4c.0 vereist
+ * de Edge Function een geverifieerd user-JWT — de session.access_token wordt
+ * meegestuurd als Bearer.
  */
 
 type Mode = 'mock' | 'remote';
@@ -35,13 +36,13 @@ interface ExposeResponse {
 
 async function callSandboxTrigger(
   supabaseUrl: string,
-  anonKey: string,
+  accessToken: string,
   body: Record<string, unknown>,
 ): Promise<ExposeResponse> {
   const r = await fetch(`${supabaseUrl}/functions/v1/sandbox-build-trigger`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${anonKey}`,
+      Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
@@ -49,12 +50,35 @@ async function callSandboxTrigger(
   return (await r.json()) as ExposeResponse;
 }
 
-// Client-side config uit VITE_ env-vars. `VITE_` prefix betekent WEL in de
-// frontend-bundle — anon key is public en mag daar; service_role NIET.
 const SUPABASE_URL = (import.meta.env['VITE_SUPABASE_URL'] as string | undefined) ?? '';
-const SUPABASE_ANON = (import.meta.env['VITE_SUPABASE_ANON_KEY'] as string | undefined) ?? '';
 
 export default function App() {
+  const { session, loading } = useSession();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-950 text-gray-500 flex items-center justify-center text-sm">
+        Sessie laden…
+      </div>
+    );
+  }
+
+  if (!SUPABASE_CONFIG_OK) {
+    return (
+      <div className="min-h-screen bg-gray-950 text-red-300 flex items-center justify-center text-sm p-8">
+        VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY ontbreken. Zet ze in Netlify site-settings.
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <LoginView />;
+  }
+
+  return <AuthedApp accessToken={session.access_token} email={session.user.email ?? ''} />;
+}
+
+function AuthedApp({ accessToken, email }: { accessToken: string; email: string }) {
   const [mode, setMode] = useState<Mode>('mock');
   const [viewport, setViewport] = useState<Viewport>('desktop');
   const [transparentNav, setTransparentNav] = useState(false);
@@ -67,12 +91,9 @@ export default function App() {
 
   async function expose() {
     if (!sandboxId.trim()) { setStatus('Vul een sandbox_id in'); return; }
-    if (!SUPABASE_URL || !SUPABASE_ANON) {
-      setStatus('VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY ontbreken in .env.local'); return;
-    }
     setBusy(true); setStatus('Sandbox exposen…');
     try {
-      const r = await callSandboxTrigger(SUPABASE_URL, SUPABASE_ANON, {
+      const r = await callSandboxTrigger(SUPABASE_URL, accessToken, {
         phase: 'expose', sandbox_id: sandboxId.trim(),
       });
       if (r.ok && r.expose_url) {
@@ -91,7 +112,7 @@ export default function App() {
     if (!sandboxId.trim()) return;
     setBusy(true); setStatus('Sandbox destroy…');
     try {
-      const r = await callSandboxTrigger(SUPABASE_URL, SUPABASE_ANON, {
+      const r = await callSandboxTrigger(SUPABASE_URL, accessToken, {
         phase: 'destroy', sandbox_id: sandboxId.trim(),
       });
       setExposeUrl(null);
@@ -101,6 +122,10 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function signOut() {
+    await supabase.auth.signOut();
   }
 
   return (
@@ -154,6 +179,16 @@ export default function App() {
                 <span className="text-gray-300">transparentNav</span>
               </label>
             )}
+            <div className="ml-2 pl-3 border-l border-gray-700 flex items-center gap-2 text-gray-400">
+              <span title={email}>{email}</span>
+              <button
+                type="button"
+                onClick={signOut}
+                className="rounded bg-gray-800 text-gray-300 px-2 py-1 hover:bg-gray-700"
+              >
+                Uitloggen
+              </button>
+            </div>
           </div>
         </div>
         {mode === 'remote' && (
@@ -162,7 +197,7 @@ export default function App() {
               type="text"
               value={sandboxId}
               onChange={(e) => setSandboxId(e.target.value)}
-              placeholder="sandbox_id (uit run-spike.ps1 output, met keep_alive:true)"
+              placeholder="sandbox_id (uit run-spike.ps1 -KeepAlive)"
               className="flex-1 rounded bg-gray-800 text-gray-100 px-3 py-1.5 border border-gray-700 focus:border-white/60 focus:outline-none"
             />
             <button
