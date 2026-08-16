@@ -30,3 +30,6 @@ test-results/
 # Supabase CLI local state — never commit
 supabase/.branches/
 supabase/.temp/
+
+# Spike build artefacts (archives + meta) — locally generated, not for git
+.spike-build/
