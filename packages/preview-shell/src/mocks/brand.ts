@@ -1,4 +1,4 @@
-import type { BrandData } from '../components/types';
+import type { BrandData } from '../components/Site/sections/types';
 
 export const MOCK_BRAND: BrandData = {
   id: 'brand-design4-mock',

@@ -97,13 +97,17 @@ cpSync(SHELL_DIR, workDir, {
 });
 console.log(`[1/5] preview-shell gekopieerd naar ${workDir}`);
 
-// Verwijder placeholder GeneratedComponent.tsx en schrijf echte component
-const placeholderPath = join(workDir, 'src', 'components', 'GeneratedComponent.tsx');
+// Verwijder placeholder en schrijf echte component in TravelBridgeAI-conforme pad:
+//   src/components/Site/sections/<ComponentName>.tsx
+// Deze diepte matcht POLICY_V1_0.allowedImports: `../../lib/imageUtils`,
+// `../../lib/sectionStyle`, `./types`.
+const sectionsDir = join(workDir, 'src', 'components', 'Site', 'sections');
+const placeholderPath = join(sectionsDir, 'GeneratedComponent.tsx');
 if (existsSync(placeholderPath)) rmSync(placeholderPath);
 
-const componentDst = join(workDir, 'src', 'components', manifest.fileName);
+const componentDst = join(sectionsDir, manifest.fileName);
 cpSync(componentSrc, componentDst);
-console.log(`[2/5] Component gekopieerd → src/components/${manifest.fileName}`);
+console.log(`[2/5] Component gekopieerd → src/components/Site/sections/${manifest.fileName}`);
 
 // -----------------------------------------------------------------------------
 // Schrijf nieuwe App.tsx
@@ -111,7 +115,7 @@ console.log(`[2/5] Component gekopieerd → src/components/${manifest.fileName}`
 
 const componentName = manifest.componentName;
 const appTsx = `import { Studio4SiteLayout } from './layout/Studio4SiteLayout';
-import { ${componentName} } from './components/${componentName}';
+import { ${componentName} } from './components/Site/sections/${componentName}';
 import { MOCK_BRAND } from './mocks/brand';
 import { MOCK_PAGE_CONTENT } from './mocks/pageContent';
 

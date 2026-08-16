@@ -1,5 +1,5 @@
 import { Phone } from 'lucide-react';
-import type { BrandData } from '../components/types';
+import type { BrandData } from '../components/Site/sections/types';
 
 /**
  * Mock Studio4-nav in de preview-shell. Ondersteunt transparent+opaque

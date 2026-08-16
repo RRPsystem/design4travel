@@ -1,5 +1,5 @@
 import { Studio4SiteLayout } from './layout/Studio4SiteLayout';
-import { GeneratedComponent } from './components/GeneratedComponent';
+import { GeneratedComponent } from './components/Site/sections/GeneratedComponent';
 import { MOCK_BRAND } from './mocks/brand';
 import { MOCK_PAGE_CONTENT } from './mocks/pageContent';
 

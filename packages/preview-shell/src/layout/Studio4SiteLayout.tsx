@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { BrandData } from '../components/types';
+import type { BrandData } from '../components/Site/sections/types';
 import { Studio4Nav } from './Studio4Nav';
 
 interface Studio4SiteLayoutProps {
