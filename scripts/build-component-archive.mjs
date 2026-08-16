@@ -151,12 +151,14 @@ console.log(`[4/5] Fixture gekopieerd → src/fixtures/travel.json`);
 
 const outTar = join(OUT_DIR, `component-${manifest.id}-${STAMP}.tar.gz`);
 try {
-  // --force-local: op Windows tar interpreteert 'C:' anders als remote host.
-  // Path-to-POSIX voor de -C zodat mingw/msys-tar het ook niet als remote leest.
+  // POSIX-paths (forward slashes) voor cross-tar-compat:
+  //   - Windows bsdtar (built-in): accepteert beide, kent --force-local NIET
+  //   - mingw/git-bash tar:        interpreteert 'C:' als remote host tenzij POSIX
+  // Werkt op beide zonder speciale flags.
   const posixOut = outTar.replace(/\\/g, '/');
   const posixWork = workDir.replace(/\\/g, '/');
   execSync(
-    `tar --force-local -czf "${posixOut}" --exclude=node_modules --exclude=dist --exclude=.git -C "${posixWork}" .`,
+    `tar -czf "${posixOut}" --exclude=node_modules --exclude=dist --exclude=.git -C "${posixWork}" .`,
     { stdio: 'inherit' },
   );
 } catch (e) {
