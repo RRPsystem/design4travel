@@ -6,6 +6,7 @@ import { MOCK_PAGE_CONTENT } from './mocks/pageContent';
 import { LoginView } from './features/auth/LoginView';
 import { useSession } from './features/auth/useSession';
 import { GenerateView } from './features/generate/GenerateView';
+import { SimpleView } from './features/simple/SimpleView';
 import { supabase, SUPABASE_CONFIG_OK } from './lib/supabase';
 
 /**
@@ -76,6 +77,12 @@ export default function App() {
     return <LoginView />;
   }
 
+  // Simple mode is default (voor reisagenten). Technische testbank achter ?debug=1
+  // (canoniek: project_ux_simple_mode_default in memory).
+  const isDebug = new URLSearchParams(window.location.search).has('debug');
+  if (!isDebug) {
+    return <SimpleView accessToken={session.access_token} />;
+  }
   return <AuthedApp accessToken={session.access_token} email={session.user.email ?? ''} />;
 }
 
