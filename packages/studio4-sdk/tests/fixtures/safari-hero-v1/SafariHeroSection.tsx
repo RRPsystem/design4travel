@@ -1,5 +1,5 @@
 import { ArrowDown, Phone } from 'lucide-react';
-import { imgHeroResponsive } from '../../lib/imageUtils';
+import { imgHeroResponsive } from '../../../lib/imageUtils';
 import type { SectionProps } from './types';
 
 /**

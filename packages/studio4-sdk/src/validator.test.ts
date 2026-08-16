@@ -30,7 +30,7 @@ const VALID_MANIFEST: Studio4ComponentManifest = {
     parentCallId: 'acm_test_123',
     sourceReferenceId: 'ref_test_abc',
   },
-  requestedImports: ['react', 'lucide-react', '../../lib/imageUtils', './types'],
+  requestedImports: ['react', 'lucide-react', '../../../lib/imageUtils', './types'],
   consumes: {
     brand: ['primary_color', 'name'],
     primaryColor: true,
@@ -56,7 +56,7 @@ const VALID_MANIFEST: Studio4ComponentManifest = {
 
 const VALID_TSX = `
 import { ArrowDown } from 'lucide-react';
-import { imgHeroResponsive } from '../../lib/imageUtils';
+import { imgHeroResponsive } from '../../../lib/imageUtils';
 import type { SectionProps } from './types';
 
 export function HeroSafariSection({ brand, primaryColor, pageContent }: SectionProps) {

@@ -37,8 +37,8 @@ export const POLICY_V1_0: SdkPolicy = {
     // - imageUtils: verplicht voor responsive images (netlify-image-CDN)
     // - sectionStyle: mergeSectionRoot() voor brand-override-styling
     // - types: SectionProps + BrandData
-    '../../lib/imageUtils',
-    '../../lib/sectionStyle',
+    '../../../lib/imageUtils',
+    '../../../lib/sectionStyle',
     './types',
   ] as const,
 

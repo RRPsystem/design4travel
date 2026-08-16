@@ -15,7 +15,7 @@
   "requestedImports": [
     "react",
     "lucide-react",
-    "../../lib/imageUtils",
+    "../../../lib/imageUtils",
     "./types"
   ],
   "consumes": {
