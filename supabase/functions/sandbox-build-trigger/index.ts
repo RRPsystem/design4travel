@@ -636,6 +636,163 @@ async function handleDestroy(apiKey: string, sandboxId: string) {
   };
 }
 
+/**
+ * build_from_ai — vervangt build voor pakketten die door
+ * generate-studio4-component zijn geproduceerd. Preview-shell template wordt
+ * uit `preview-shell-templates`-bucket gedownload in de sandbox, uitgepakt,
+ * en de AI-Component + manifest + fixture worden erin geplakt.
+ *
+ * Input: manifest (parsed JSON), componentTsx (string), preview_shell_version
+ * (bijv. "0.0.1"), fixture_path (in `sandbox-archives`; bijv. de safari
+ * travel-fixture).
+ *
+ * Sandbox blijft leven na afloop; volgende call is `expose`.
+ */
+async function handleBuildFromAi(
+  apiKey: string,
+  supabaseUrl: string,
+  serviceKey: string,
+  sandboxId: string,
+  manifest: Record<string, unknown>,
+  componentTsx: string,
+  previewShellVersion: string,
+  fixturePath: string | null,
+) {
+  const t0 = Date.now();
+  const timings: Record<string, number> = {};
+  const logs: StepLog[] = [];
+  let error: string | null = null;
+  let sandbox: Sandbox | null = null;
+
+  const componentName = String(manifest.componentName ?? '');
+  const fileName = String(manifest.fileName ?? '');
+  const transparentNav = Boolean(
+    (manifest.pageLevel as { requiresTransparentNav?: boolean } | undefined)?.requiresTransparentNav,
+  );
+
+  if (!componentName || !fileName || !fileName.endsWith('.tsx')) {
+    return {
+      ok: false,
+      phase: 'build_from_ai',
+      sandbox_id: sandboxId,
+      error: 'manifest_missing_componentName_or_fileName',
+      duration_total_ms: Date.now() - t0,
+      timings,
+      logs,
+    };
+  }
+
+  try {
+    // Signed URLs: preview-shell template + optionele fixture
+    const tUrls = Date.now();
+    const shellUrl = await signedDownloadUrl(
+      supabaseUrl, serviceKey,
+      'preview-shell-templates', `preview-shell-v${previewShellVersion}.tar.gz`,
+      600,
+    );
+    const fixtureUrl = fixturePath
+      ? await signedDownloadUrl(supabaseUrl, serviceKey, 'sandbox-archives', fixturePath, 600)
+      : null;
+    timings.signed_urls_ms = Date.now() - tUrls;
+
+    const tConn = Date.now();
+    sandbox = await Sandbox.connect(sandboxId);
+    timings.sandbox_connect_ms = Date.now() - tConn;
+
+    // Schrijf AI-Component naar filesystem (via files.write; robuuster dan echo)
+    const tWrite = Date.now();
+    await sandbox.files.write(`/tmp/ai-component.tsx`, componentTsx);
+    await sandbox.files.write(`/tmp/ai-manifest.json`, JSON.stringify(manifest, null, 2));
+    timings.write_ai_files_ms = Date.now() - tWrite;
+
+    // App.tsx template — build up on Deno-side, write into sandbox
+    const appTsx = `import { Studio4SiteLayout } from './layout/Studio4SiteLayout';
+import { ${componentName} } from './components/Site/sections/${componentName}';
+import { MOCK_BRAND } from './mocks/brand';
+import { MOCK_PAGE_CONTENT } from './mocks/pageContent';
+
+export default function App() {
+  return (
+    <Studio4SiteLayout brand={MOCK_BRAND} transparentNav={${transparentNav}}>
+      <${componentName}
+        brand={MOCK_BRAND}
+        primaryColor={MOCK_BRAND.primary_color}
+        secondaryColor={MOCK_BRAND.secondary_color}
+        basePath="/"
+        pageContent={MOCK_PAGE_CONTENT}
+      />
+    </Studio4SiteLayout>
+  );
+}
+`;
+    await sandbox.files.write(`/tmp/ai-app.tsx`, appTsx);
+
+    const steps: Array<{ label: string; cmd: string; timeoutMs: number }> = [
+      {
+        label: 'download_preview_shell',
+        cmd: `set -e; curl -sSL --fail "${shellUrl}" -o /tmp/shell.tar.gz && ls -lh /tmp/shell.tar.gz`,
+        timeoutMs: 60_000,
+      },
+      {
+        label: 'extract_preview_shell',
+        cmd: `set -e; rm -rf /home/user/build && mkdir -p /home/user/build && tar -xzf /tmp/shell.tar.gz -C /home/user/build && ls /home/user/build`,
+        timeoutMs: 30_000,
+      },
+      {
+        label: 'patch_component_and_manifest',
+        cmd: `set -e
+mkdir -p /home/user/build/src/components/Site/sections
+rm -f /home/user/build/src/components/Site/sections/GeneratedComponent.tsx
+cp /tmp/ai-component.tsx /home/user/build/src/components/Site/sections/${fileName}
+cp /tmp/ai-manifest.json /home/user/build/src/components/Site/sections/manifest.json
+cp /tmp/ai-app.tsx /home/user/build/src/App.tsx
+ls /home/user/build/src/components/Site/sections/`,
+        timeoutMs: 15_000,
+      },
+    ];
+
+    if (fixtureUrl) {
+      steps.push({
+        label: 'download_fixture',
+        cmd: `set -e; curl -sSL --fail "${fixtureUrl}" -o /home/user/build/src/fixtures/travel.json && ls -lh /home/user/build/src/fixtures/travel.json`,
+        timeoutMs: 30_000,
+      });
+    }
+
+    steps.push(
+      {
+        label: 'npm_install',
+        cmd: `cd /home/user/build && npm install --legacy-peer-deps --no-audit --no-fund`,
+        timeoutMs: 180_000,
+      },
+      {
+        label: 'vite_build',
+        cmd: `cd /home/user/build && npm run build`,
+        timeoutMs: 90_000,
+      },
+    );
+
+    for (const s of steps) {
+      const ok = await runStep(sandbox, s.label, s.cmd, s.timeoutMs, logs, timings);
+      if (!ok) throw new Error(`step_failed:${s.label}`);
+    }
+  } catch (e) {
+    error = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+  }
+  // Geen kill — sandbox blijft leven voor expose.
+
+  return {
+    ok: !error,
+    phase: 'build_from_ai',
+    sandbox_id: sandboxId,
+    error,
+    duration_total_ms: Date.now() - t0,
+    timings,
+    logs,
+    next: { phase: 'expose', sandbox_id: sandboxId },
+  };
+}
+
 async function handleCapture(
   apiKey: string,
   supabaseUrl: string,
@@ -800,7 +957,16 @@ Deno.serve(async (req: Request) => {
     );
   }
 
-  let body: { phase?: string; sandbox_id?: string; archive_path?: string; keep_alive?: boolean } = {};
+  let body: {
+    phase?: string;
+    sandbox_id?: string;
+    archive_path?: string;
+    keep_alive?: boolean;
+    manifest?: Record<string, unknown>;
+    component_tsx?: string;
+    preview_shell_version?: string;
+    fixture_path?: string;
+  } = {};
   try {
     body = await req.json();
   } catch {
@@ -842,6 +1008,34 @@ Deno.serve(async (req: Request) => {
       }
       const result = await handleBuild(
         apiKey, supabaseUrl, serviceKey, body.sandbox_id, body.archive_path,
+      );
+      return new Response(JSON.stringify(result, null, 2), {
+        headers: { ...CORS, 'Content-Type': 'application/json' },
+      });
+    }
+    if (body.phase === 'build_from_ai') {
+      if (!body.sandbox_id || !body.manifest || !body.component_tsx) {
+        return new Response(
+          JSON.stringify({ ok: false, error: 'build_from_ai_requires_sandbox_id_manifest_component_tsx' }),
+          { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } },
+        );
+      }
+      const own = await assertSandboxOwnership(supabaseUrl, serviceKey, auth, body.sandbox_id);
+      if (!own.ok) {
+        return new Response(
+          JSON.stringify({ ok: false, error: own.error }),
+          { status: own.status, headers: { ...CORS, 'Content-Type': 'application/json' } },
+        );
+      }
+      const result = await handleBuildFromAi(
+        apiKey,
+        supabaseUrl,
+        serviceKey,
+        body.sandbox_id,
+        body.manifest,
+        body.component_tsx,
+        body.preview_shell_version || '0.0.1',
+        body.fixture_path || null,
       );
       return new Response(JSON.stringify(result, null, 2), {
         headers: { ...CORS, 'Content-Type': 'application/json' },

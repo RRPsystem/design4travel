@@ -43,6 +43,14 @@ interface GenerateResponse {
   final_validation?: { ok: boolean; errorCount: number; issues: Array<{ severity: string; rule: string; message: string }> } | null;
 }
 
+// Preview-shell versie (moet matchen met wat via publish-preview-shell.mjs is geüpload)
+const PREVIEW_SHELL_VERSION = '0.0.1';
+
+// Fixture-injectie in sandbox: als user een fixture-JSON in `sandbox-archives`
+// heeft geüpload (bijv. via dashboard), kan hier het pad gezet worden. Anders:
+// null → preview-shell gebruikt zijn placeholder travel.json.
+const FIXTURE_PATH_IN_ARCHIVES: string | null = null;
+
 export function GenerateView({ accessToken }: { accessToken: string }) {
   const [file, setFile] = useState<File | null>(null);
   const [chatPrompt, setChatPrompt] = useState('');
@@ -50,6 +58,73 @@ export function GenerateView({ accessToken }: { accessToken: string }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string>('');
   const [result, setResult] = useState<GenerateResponse | null>(null);
+  const [pipelineBusy, setPipelineBusy] = useState(false);
+  const [pipelineStatus, setPipelineStatus] = useState<string>('');
+  const [exposeUrl, setExposeUrl] = useState<string | null>(null);
+  const [sandboxId, setSandboxId] = useState<string | null>(null);
+
+  async function runPipeline() {
+    if (!result?.final_package) return;
+    setPipelineBusy(true);
+    setExposeUrl(null);
+    setSandboxId(null);
+    try {
+      // 1) prepare
+      setPipelineStatus('Sandbox aanmaken + Playwright + Chromium (20s)…');
+      const prep = await fetch(`${SUPABASE_URL}/functions/v1/sandbox-build-trigger`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phase: 'prepare' }),
+      }).then((r) => r.json());
+      if (!prep.ok || !prep.sandbox_id) { setPipelineStatus(`prepare faalde: ${prep.error ?? 'onbekend'}`); return; }
+      const sid = prep.sandbox_id as string;
+      setSandboxId(sid);
+
+      // 2) build_from_ai
+      setPipelineStatus('Preview-shell downloaden + AI-component patchen + npm install + vite build (30s)…');
+      const build = await fetch(`${SUPABASE_URL}/functions/v1/sandbox-build-trigger`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phase: 'build_from_ai',
+          sandbox_id: sid,
+          manifest: result.final_package.manifest,
+          component_tsx: result.final_package.componentTsx,
+          preview_shell_version: PREVIEW_SHELL_VERSION,
+          fixture_path: FIXTURE_PATH_IN_ARCHIVES,
+        }),
+      }).then((r) => r.json());
+      if (!build.ok) { setPipelineStatus(`build_from_ai faalde: ${build.error ?? 'onbekend'}`); return; }
+
+      // 3) expose
+      setPipelineStatus('Server starten + publieke URL genereren (3s)…');
+      const exp = await fetch(`${SUPABASE_URL}/functions/v1/sandbox-build-trigger`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phase: 'expose', sandbox_id: sid }),
+      }).then((r) => r.json());
+      if (!exp.ok || !exp.expose_url) { setPipelineStatus(`expose faalde: ${exp.error ?? 'onbekend'}`); return; }
+
+      setExposeUrl(exp.expose_url as string);
+      setPipelineStatus(`Live op ${exp.expose_url}`);
+    } catch (e) {
+      setPipelineStatus(`Pipeline-fetch faalde: ${(e as Error).message}`);
+    } finally {
+      setPipelineBusy(false);
+    }
+  }
+
+  async function destroySandbox() {
+    if (!sandboxId) return;
+    await fetch(`${SUPABASE_URL}/functions/v1/sandbox-build-trigger`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phase: 'destroy', sandbox_id: sandboxId }),
+    }).catch(() => { /* ignore */ });
+    setExposeUrl(null);
+    setSandboxId(null);
+    setPipelineStatus('Sandbox destroyed.');
+  }
 
   async function generate() {
     if (!file) { setStatus('Kies eerst een reference-image'); return; }
@@ -206,9 +281,46 @@ export function GenerateView({ accessToken }: { accessToken: string }) {
             </div>
           )}
 
-          {/* Files-viewer bij success */}
+          {/* Files-viewer + auto-pipeline bij success */}
           {result.ok && result.final_package && (
             <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={runPipeline}
+                  disabled={pipelineBusy}
+                  className="inline-flex items-center gap-2 rounded bg-white text-gray-900 px-4 py-2 font-semibold disabled:opacity-50"
+                >
+                  {pipelineBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                  {pipelineBusy ? 'Pipeline draait…' : 'Preview live (auto-pipeline)'}
+                </button>
+                {sandboxId && (
+                  <button
+                    type="button"
+                    onClick={destroySandbox}
+                    className="rounded bg-red-600 text-white px-3 py-1.5 text-xs font-medium"
+                  >
+                    Destroy sandbox
+                  </button>
+                )}
+                {sandboxId && (
+                  <span className="text-xs text-gray-500 font-mono">sandbox={sandboxId}</span>
+                )}
+              </div>
+              {pipelineStatus && (
+                <div className="text-xs text-gray-400 font-mono break-all">{pipelineStatus}</div>
+              )}
+              {exposeUrl && (
+                <div className="bg-white rounded overflow-hidden shadow-2xl">
+                  <iframe
+                    title="AI-generated live preview"
+                    src={exposeUrl}
+                    className="block border-0 w-full"
+                    style={{ height: '900px' }}
+                  />
+                </div>
+              )}
+
               <FileBlock
                 title="manifest.json"
                 content={JSON.stringify(result.final_package.manifest, null, 2)}
@@ -217,9 +329,6 @@ export function GenerateView({ accessToken }: { accessToken: string }) {
                 title="Component.tsx"
                 content={result.final_package.componentTsx}
               />
-              <div className="text-xs text-gray-500">
-                Kopieer beide files naar een lokale pakket-dir en gebruik <code className="text-gray-400">scripts/build-component-archive.mjs</code> voor de sandbox-pipeline. Iteratie 4c.2 automatiseert deze stap.
-              </div>
             </div>
           )}
         </div>
