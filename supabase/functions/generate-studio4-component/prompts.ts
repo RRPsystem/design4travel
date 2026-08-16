@@ -9,9 +9,56 @@ export const SYSTEM_PROMPT = `Je bent de Studio4 Component SDK generator voor De
 
 Design4 is een AI-native ontwerpomgeving voor reisprofessionals. Jouw taak: op basis van een geüploade design-referentie (screenshot van een bestaande website of moodboard) genereer je een Studio4-component-pakket (manifest.json + één .tsx-bestand) dat in TravelBridgeAI's SECTION_REGISTRY kan landen.
 
-## Contract v1.0
+## Manifest.json — verplichte shape
 
-Elke output MOET voldoen aan POLICY_V1_0:
+De manifest is een JSON-object (GEEN string) met exact deze structuur:
+
+\`\`\`json
+{
+  "sdkVersion": "1.0",
+  "id": "<kebab-case-slug>",
+  "displayName": "<Menselijke naam, bv. 'Safari Hero'>",
+  "componentName": "<PascalCase, bv. 'SafariHeroSection'>",
+  "fileName": "<componentName>.tsx",
+  "registryKey": "<snake_case, bv. 'safari_hero'>",
+  "category": "<vrij label, bv. 'hero' | 'grid' | 'spotlight'>",
+  "producedBy": {
+    "engine": "studio4-component",
+    "iteration": 1,
+    "parentCallId": "ai_generated",
+    "sourceReferenceId": "ai_generated"
+  },
+  "requestedImports": [
+    "react",
+    "lucide-react",
+    "../../../lib/imageUtils",
+    "./types"
+  ],
+  "consumes": {
+    "brand": ["primary_color", "name"],
+    "primaryColor": true,
+    "pageContent": ["hero"]
+  },
+  "media": [
+    { "role": "background", "kind": "image", "minWidth": 1600 }
+  ],
+  "pageLevel": {
+    "requiresTransparentNav": true,
+    "recommendedPage": "home"
+  },
+  "responsive": {
+    "breakpoints": ["sm", "md", "lg", "xl", "2xl"]
+  },
+  "a11y": {
+    "landmarks": ["banner"],
+    "supportsReducedMotion": true
+  }
+}
+\`\`\`
+
+**Kritieke regel voor \`requestedImports\`**: dit is een array van strings. Vermeld ELKE import-string die je in Component.tsx gebruikt. Als je \`import { imgHeroResponsive } from '../../../lib/imageUtils'\` gebruikt → \`"../../../lib/imageUtils"\` in requestedImports. Als je \`lucide-react\`-icoontjes gebruikt → \`"lucide-react"\`. Zelfs alleen types uit \`./types\` importeren → \`"./types"\`.
+
+## Contract v1.0 (regels)
 
 - **sdkVersion**: exact "1.0"
 - **id**: kebab-case (zoals "hero-safari-v1")
@@ -126,7 +173,15 @@ export function buildInitialUserMessage(
   return { role: 'user', content: parts };
 }
 
-export function buildRepairUserMessage(previousValidation: ValidationResult) {
+/**
+ * Repair-user-message MOET een `tool_result` block bevatten dat aansluit op
+ * het tool_use-id uit de vorige assistant-response. Anders geeft Anthropic
+ * 400 "tool_use ids were found without tool_result blocks".
+ */
+export function buildRepairUserMessage(
+  previousValidation: ValidationResult,
+  previousToolUseId: string,
+) {
   const errors = previousValidation.issues
     .filter((i) => i.severity === 'error')
     .map((i, idx) => `${idx + 1}. [${i.rule}] ${i.message}${i.location?.file ? ` (in ${i.location.file})` : ''}`)
@@ -135,13 +190,13 @@ export function buildRepairUserMessage(previousValidation: ValidationResult) {
     role: 'user',
     content: [
       {
-        type: 'text',
-        text: [
-          'Je vorige pakket faalde de validator. Repareer specifiek deze issues en emit opnieuw:',
+        type: 'tool_result',
+        tool_use_id: previousToolUseId,
+        is_error: true,
+        content: [
+          'Validator wees je vorige pakket af. Fix ALLE onderstaande issues en emit opnieuw met de tool. Behoud het visuele ontwerp; verander alleen wat nodig is:',
           '',
           errors,
-          '',
-          'Behoud het visuele ontwerp; verander alleen wat nodig is om alle errors op te lossen.',
         ].join('\n'),
       },
     ],

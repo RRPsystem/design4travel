@@ -19,6 +19,7 @@ export interface ClaudeVisionCall {
 
 export interface ClaudeVisionResult {
   emitted: EmittedPackage;
+  toolUseId: string;
   tokensIn?: number;
   tokensOut?: number;
   rawText?: string;
@@ -79,6 +80,7 @@ export async function callClaudeVision(opts: ClaudeVisionCall): Promise<ClaudeVi
 
   return {
     emitted: { manifest: input.manifest as Record<string, unknown>, componentTsx: input.componentTsx },
+    toolUseId: toolBlock.id,
     tokensIn: payload.usage?.input_tokens,
     tokensOut: payload.usage?.output_tokens,
   };

@@ -178,14 +178,23 @@ Deno.serve(async (req: Request) => {
 
     // Iteratie-loop
     let lastValidation: ValidationResult | null = null;
+    let lastToolUseId: string | null = null;
     for (let i = 1; i <= MAX_ITERATIONS; i++) {
       const model = i === 1 ? 'claude-sonnet-5' : 'claude-opus-5';
       const messages = i === 1
         ? [buildInitialUserMessage(imageUrl, body.chat_prompt ?? '', body.fixture_hint ?? '')]
         : [
             buildInitialUserMessage(imageUrl, body.chat_prompt ?? '', body.fixture_hint ?? ''),
-            { role: 'assistant', content: [{ type: 'tool_use', id: 'prev', name: 'emit_studio4_component_package', input: finalPackage ?? {} }] },
-            buildRepairUserMessage(lastValidation!),
+            {
+              role: 'assistant',
+              content: [{
+                type: 'tool_use',
+                id: lastToolUseId!,
+                name: 'emit_studio4_component_package',
+                input: finalPackage ?? {},
+              }],
+            },
+            buildRepairUserMessage(lastValidation!, lastToolUseId!),
           ];
 
       const tCall = Date.now();
@@ -200,6 +209,7 @@ Deno.serve(async (req: Request) => {
       const latency = Date.now() - tCall;
 
       finalPackage = callResult.emitted;
+      lastToolUseId = callResult.toolUseId;
       finalValidation = validatePackage(
         {
           manifestJson: JSON.stringify(callResult.emitted.manifest),
