@@ -85,9 +85,11 @@ async function upsertContentSource(
     content: unknown;
   },
 ): Promise<{ id: string } | { error: string }> {
-  // ON CONFLICT (owner_user_id, kind, source_id, version) DO UPDATE
-  // via PostgREST resolution=merge-duplicates.
-  const r = await fetch(`${supabaseUrl}/rest/v1/content_sources`, {
+  // ON CONFLICT (owner_user_id, kind, source_id, version) DO UPDATE via
+  // PostgREST upsert. `?on_conflict=...` is verplicht — anders weet PostgREST
+  // niet op welke kolommen te resolveren en faalt op de UNIQUE-constraint.
+  const conflictCols = 'owner_user_id,kind,source_id,version';
+  const r = await fetch(`${supabaseUrl}/rest/v1/content_sources?on_conflict=${conflictCols}`, {
     method: 'POST',
     headers: {
       apikey: serviceKey,
