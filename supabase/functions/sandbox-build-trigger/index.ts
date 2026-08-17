@@ -561,78 +561,32 @@ async function handleExpose(apiKey: string, sandboxId: string) {
     sandbox = await Sandbox.connect(sandboxId);
     timings.sandbox_connect_ms = Date.now() - tConn;
 
-    // Static server op :8080 met no-cache headers. Bij een revise draaide
-    // een eerder server-proces al, MAAR standaard `python3 -m http.server`
-    // stuurt geen Cache-Control-headers → Chrome cached iframe-content
-    // agressief → user ziet oude build ondanks succesvolle rebuild.
-    // Fix: bij elke expose kill de bestaande server (indien draaiend) en
-    // start een custom Python-handler die no-store headers meestuurt.
-    const noCachePy = [
-      'import http.server, socketserver, os',
-      'os.chdir("/home/user/build/dist")',
-      'class H(http.server.SimpleHTTPRequestHandler):',
-      '    def end_headers(self):',
-      '        self.send_header("Cache-Control","no-store, no-cache, must-revalidate, max-age=0")',
-      '        self.send_header("Pragma","no-cache")',
-      '        self.send_header("Expires","0")',
-      '        super().end_headers()',
-      'socketserver.TCPServer.allow_reuse_address = True',
-      'with socketserver.TCPServer(("0.0.0.0",8080), H) as httpd:',
-      '    httpd.serve_forever()',
-    ].join('\n');
-    await sandbox.files.write('/tmp/http-nocache.py', noCachePy);
-
+    // Start static HTTP server op :8080 (plain python3.http.server). Cache-issue
+    // van revise (browser toont oude build) wordt aan client-kant afgevangen
+    // met een cache-bust query param op de iframe-src (?_r=<iframeKey>).
+    // Server-side no-cache-handler was fragiel — plain server werkt betrouwbaar.
     const ok = await runStep(
       sandbox,
-      'start_static_server_nocache',
+      'start_static_server',
       `bash -c '
 set -e
-# Pre-flight: python-script aanwezig?
-if [ ! -f /tmp/http-nocache.py ]; then
-  echo "[expose] FATAL /tmp/http-nocache.py ontbreekt"
-  exit 1
+if curl -sf -o /dev/null http://127.0.0.1:8080/; then
+  echo "[expose] server already running"
+else
+  cd /home/user/build/dist
+  nohup python3 -m http.server 8080 --bind 0.0.0.0 > /tmp/server.log 2>&1 &
+  disown
+  for i in $(seq 1 15); do
+    if curl -sf -o /dev/null http://127.0.0.1:8080/; then
+      echo "[expose] server ready after \${i}s"
+      break
+    fi
+    sleep 1
+  done
 fi
-# Pre-flight: dist bestaat?
-if [ ! -d /home/user/build/dist ]; then
-  echo "[expose] FATAL /home/user/build/dist ontbreekt"
-  ls -la /home/user/build 2>/dev/null || true
-  exit 1
-fi
-# Kill eventuele oude servers op :8080 (fresh sandbox → geen match, dus || true)
-pkill -f "http.server" 2>/dev/null || true
-pkill -f "http-nocache.py" 2>/dev/null || true
-sleep 2
-# Start de custom no-cache server. -u = unbuffered zodat logs direct wegvloeien.
-nohup python3 -u /tmp/http-nocache.py > /tmp/server.log 2>&1 &
-SPID=$!
-disown
-echo "[expose] python-server PID=$SPID"
-sleep 1
-# Draait proces nog?
-if ! kill -0 $SPID 2>/dev/null; then
-  echo "[expose] server-proces crashte direct, server.log:"
-  cat /tmp/server.log 2>/dev/null || echo "(server.log leeg of afwezig)"
-  exit 1
-fi
-# Wacht tot port bereikbaar (max 20s)
-READY=0
-for i in $(seq 1 20); do
-  if curl -sf -o /dev/null http://127.0.0.1:8080/; then
-    echo "[expose] no-cache server ready after \${i}s"
-    READY=1
-    break
-  fi
-  sleep 1
-done
-if [ "$READY" != "1" ]; then
-  echo "[expose] server draait ($SPID) maar :8080 niet reachable na 20s, server.log:"
-  cat /tmp/server.log 2>/dev/null || true
-  exit 1
-fi
-# Diagnostic: cache-control header aanwezig? Non-fatal.
-curl -sfI http://127.0.0.1:8080/ | grep -i "cache-control" || echo "[expose] cache-control header niet gezien (non-fatal)"
+curl -sf http://127.0.0.1:8080/ | head -1
 '`,
-      45_000,
+      30_000,
       logs,
       timings,
     );
