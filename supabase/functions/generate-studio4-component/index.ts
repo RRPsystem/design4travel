@@ -423,30 +423,14 @@ Deno.serve(async (req: Request) => {
     error = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
   }
 
-  // Na succesvolle validatie: vervang {{image:role|query}}-tokens door
-  // echte URLs via media-search (Unsplash → Pexels → picsum-fallback).
-  // Fail-soft: bij media-search-fouten blijven tokens staan, generation
-  // wordt niet gefaald.
-  let tokenResolve: TokenResolveResult | null = null;
-  if (!error && finalValidation?.ok && finalPackage) {
-    try {
-      tokenResolve = await resolveImageTokens(
-        finalPackage.componentTsx,
-        supabaseUrl,
-        serviceKey,
-      );
-      finalPackage = { ...finalPackage, componentTsx: tokenResolve.componentTsx };
-    } catch (e) {
-      // Log maar niet fatal
-      tokenResolve = {
-        componentTsx: finalPackage.componentTsx,
-        tokensFound: 0,
-        tokensResolved: 0,
-        sources: {},
-        errors: [`resolver_error: ${(e as Error).message}`],
-      };
-    }
-  }
+  // Image-token substitutie gebeurt NIET meer hier — verplaatst naar
+  // sandbox-build-trigger.build_from_ai, ná de canonical validator.
+  // Reden: canonical validator draait tegen dezelfde POLICY_V1_0 als Deno-
+  // side en weigert concrete unsplash/pexels-URLs (dwingt tokens). Als we
+  // hier al zouden substitueren, zou canonical valid content afwijzen.
+  // final_package bevat dus de PURE token-versie; concrete URLs komen pas
+  // in de sandbox terecht.
+  const tokenResolve = null;
 
   return new Response(
     JSON.stringify({

@@ -695,6 +695,75 @@ async function callCanonicalValidator(
 }
 
 /**
+ * Image-token resolver — vervangt `{{image:role|query}}`-tokens in de
+ * componentTsx door concrete URLs via de media-search Edge Function.
+ * Wordt aangeroepen NA canonical validatie (die de tokens accepteert
+ * omdat ze geen URL-pattern matchen) en VÓÓR sandbox-files-write.
+ *
+ * Dedupe op query zodat 5x dezelfde search = 1 API-call. Fail-soft:
+ * bij search-fouten blijft de token staan (broken image > total-fail).
+ */
+const IMAGE_TOKEN_REGEX = /\{\{image:([^|}]+)\|([^}]+)\}\}/g;
+
+interface TokenResolveResult {
+  componentTsx: string;
+  tokensFound: number;
+  tokensResolved: number;
+  sources: Record<string, number>;
+  errors: string[];
+}
+
+async function resolveImageTokens(
+  componentTsx: string,
+  supabaseUrl: string,
+  serviceKey: string,
+): Promise<TokenResolveResult> {
+  const matches = [...componentTsx.matchAll(IMAGE_TOKEN_REGEX)];
+  const uniqueQueries = new Set<string>();
+  for (const m of matches) uniqueQueries.add(m[2]!.trim());
+
+  const urlByQuery = new Map<string, string>();
+  const sources: Record<string, number> = {};
+  const errors: string[] = [];
+
+  await Promise.all(
+    [...uniqueQueries].map(async (q) => {
+      try {
+        const r = await fetch(`${supabaseUrl}/functions/v1/media-search`, {
+          method: 'POST',
+          headers: {
+            apikey: serviceKey,
+            Authorization: `Bearer ${serviceKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ query: q, orientation: 'landscape' }),
+        });
+        const j = (await r.json()) as { ok?: boolean; url?: string; source?: string; error?: string };
+        if (!r.ok || !j.ok || !j.url) {
+          errors.push(`"${q}": ${j.error ?? `http_${r.status}`}`);
+          return;
+        }
+        urlByQuery.set(q, j.url);
+        const src = j.source ?? 'unknown';
+        sources[src] = (sources[src] ?? 0) + 1;
+      } catch (e) {
+        errors.push(`"${q}": ${(e as Error).message}`);
+      }
+    }),
+  );
+
+  let resolved = 0;
+  const out = componentTsx.replace(IMAGE_TOKEN_REGEX, (full, _role: string, query: string) => {
+    const url = urlByQuery.get(query.trim());
+    if (!url) return full;
+    resolved++;
+    return url;
+  });
+
+  return { componentTsx: out, tokensFound: matches.length, tokensResolved: resolved, sources, errors };
+}
+
+/**
  * Content-source resolver (internal call naar Design4 resolve-content-source
  * Edge Function met service-role). Voor build_from_ai vertaalt content_source_id
  * naar gevalideerd TravelContent-JSON dat in de sandbox als fixture landt.
@@ -764,6 +833,7 @@ async function handleBuildFromAi(
   const transparentNav = Boolean(
     (manifest.pageLevel as { requiresTransparentNav?: boolean } | undefined)?.requiresTransparentNav,
   );
+  let tokenResolveResult: TokenResolveResult | null = null;
 
   if (!componentName || !fileName || !fileName.endsWith('.tsx')) {
     return {
@@ -778,6 +848,8 @@ async function handleBuildFromAi(
   }
 
   // SECURITY-GATE 1: canonical AST-validator moet slagen vóór ANY sandbox-werk.
+  // Validator draait tegen de PURE TOKEN-versie van componentTsx (image-token
+  // substitutie gebeurt pas ná deze check).
   const tCanonical = Date.now();
   const canonical = await callCanonicalValidator(manifest, componentTsx);
   timings.canonical_validator_ms = Date.now() - tCanonical;
@@ -866,8 +938,15 @@ async function handleBuildFromAi(
     const tmpManifest  = `/tmp/ai-manifest-${uniq}.json`;
     const tmpApp       = `/tmp/ai-app-${uniq}.tsx`;
 
+    // Image-token substitutie: vervang {{image:role|query}} door concrete
+    // Unsplash/Pexels/picsum-URLs. Gebeurt ná canonical (die tokens accepteert)
+    // en vóór files.write in sandbox — zodat Vite build echte URLs krijgt.
+    const tImg = Date.now();
+    tokenResolveResult = await resolveImageTokens(componentTsx, supabaseUrl, serviceKey);
+    timings.image_tokens_ms = Date.now() - tImg;
+
     const tWrite = Date.now();
-    await sandbox.files.write(tmpComponent, componentTsx);
+    await sandbox.files.write(tmpComponent, tokenResolveResult.componentTsx);
     await sandbox.files.write(tmpManifest, JSON.stringify(manifest, null, 2));
     // TravelContent-JSON (indien content_source_id gebruikt) landt als
     // /tmp/ai-travel-<uniq>.json en wordt in patch-step naar
@@ -964,6 +1043,7 @@ ls /home/user/build/src/components/Site/sections/`,
     duration_total_ms: Date.now() - t0,
     timings,
     logs,
+    image_tokens: tokenResolveResult,
     next: { phase: 'expose', sandbox_id: sandboxId },
   };
 }
