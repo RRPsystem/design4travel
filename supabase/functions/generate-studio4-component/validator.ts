@@ -43,6 +43,79 @@ const PASCAL = /^[A-Z][A-Za-z0-9]*$/;
 const IDENTIFIER_BOUNDARY = /[A-Za-z0-9_$]/;
 const URL_REGEX = /https?:\/\/([^\s"'`)]+)/g;
 
+/**
+ * Vervang comments (// en / * ... * /) en string-/template-literals door
+ * spaties met behoud van source-length. Zo triggert een woord als "Function"
+ * in een JSDoc-comment of in een string niet meer de identifier-scan.
+ *
+ * Dit is een pragmatische fallback voor de Deno-Edge-Function; canonical
+ * validator (packages/studio4-sdk) gebruikt een echte AST-scan via
+ * @typescript-eslint/parser die per Identifier-node bepaalt of 't een
+ * reference is. Node-scoped parser is te zwaar voor Deno-cold-start.
+ */
+function maskStringsAndComments(src: string): string {
+  const out: string[] = [];
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    const c2 = src[i + 1];
+
+    // Line comment
+    if (c === '/' && c2 === '/') {
+      let j = i;
+      while (j < n && src[j] !== '\n') { out.push(src[j] === '\n' ? '\n' : ' '); j++; }
+      i = j;
+      continue;
+    }
+    // Block comment
+    if (c === '/' && c2 === '*') {
+      let j = i + 2;
+      out.push('  ');
+      while (j < n && !(src[j] === '*' && src[j + 1] === '/')) {
+        out.push(src[j] === '\n' ? '\n' : ' ');
+        j++;
+      }
+      if (j < n) { out.push('  '); j += 2; }
+      i = j;
+      continue;
+    }
+    // String literal ' " `
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c;
+      let j = i + 1;
+      out.push(' ');
+      while (j < n) {
+        const ch = src[j];
+        if (ch === '\\' && j + 1 < n) { out.push('  '); j += 2; continue; }
+        if (ch === quote) { out.push(' '); j++; break; }
+        // In template-literals: ${...} → laat expressie WEL door (want kan
+        // een echte identifier bevatten zoals `${fetch()}`)
+        if (quote === '`' && ch === '$' && src[j + 1] === '{') {
+          out.push(' ${');
+          j += 2;
+          let depth = 1;
+          while (j < n && depth > 0) {
+            const cc = src[j];
+            if (cc === '{') depth++;
+            else if (cc === '}') { depth--; if (depth === 0) { out.push('}'); j++; break; } }
+            out.push(cc);
+            j++;
+          }
+          continue;
+        }
+        out.push(ch === '\n' ? '\n' : ' ');
+        j++;
+      }
+      i = j;
+      continue;
+    }
+    out.push(c);
+    i++;
+  }
+  return out.join('');
+}
+
 function containsIdentifier(source: string, name: string): boolean {
   let idx = source.indexOf(name);
   while (idx !== -1) {
@@ -112,20 +185,26 @@ export function validatePackage(
     }
   }
 
-  // 3. Forbidden globals in TSX (naïef — comments met de woorden triggeren ook)
-  if (files.componentTsx) {
+  // Preprocess: comments + string-/template-literals uitmaskeren zodat
+  // identifier-scan geen false-positives geeft op strings/JSDoc.
+  const maskedTsx = files.componentTsx ? maskStringsAndComments(files.componentTsx) : '';
+
+  // 3. Forbidden globals — scan tegen gemaskerde source
+  if (maskedTsx) {
     for (const g of policy.forbiddenGlobals) {
-      if (containsIdentifier(files.componentTsx, g)) {
+      if (containsIdentifier(maskedTsx, g)) {
         issues.push({
           severity: 'error', rule: 'policy.forbidden-global',
-          message: `Component.tsx bevat referentie naar verboden global "${g}". Vermijd ook mentions in doc-comments.`,
+          message: `Component.tsx bevat referentie naar verboden global "${g}".`,
           location: { file: 'Component.tsx' },
         });
       }
     }
   }
 
-  // 4. Image-URL domain-scan
+  // 4. Image-URL domain-scan — tegen ORIGINELE source want URLs zitten juist
+  // in string-literals. Maskeren zou die weghalen. Blijft dus grofmazig
+  // (URL in comment triggert ook), maar dat is een safe-default.
   if (files.componentTsx) {
     const matches = files.componentTsx.matchAll(URL_REGEX);
     for (const m of matches) {

@@ -1,3 +1,5 @@
+import { parse } from '@typescript-eslint/parser';
+import type { TSESTree } from '@typescript-eslint/types';
 import { ManifestSchema } from './manifest-schema.js';
 import { POLICY_V1_0 } from './policy-v1_0.js';
 import type {
@@ -7,23 +9,25 @@ import type {
 } from './types.js';
 
 /**
- * Studio4 Component SDK — Validator (iteratie 1).
+ * Studio4 Component SDK — Validator (iteratie 2, AST-scan).
  *
- * Deze iteratie doet CHECKS die geen AST-parser nodig hebben:
+ * Checks:
  *   1. Manifest schema-validatie via Zod (`ManifestSchema.safeParse`).
  *   2. `requestedImports` matcht `POLICY_V1_0.allowedImports` exact.
- *   3. Text-scan van `Component.tsx` voor `forbiddenGlobals` (naïef, false-
- *      positives mogelijk; AST-scan komt in iteratie 2).
- *   4. URL-domein-scan: elke `http(s)://...` in de TSX moet in
- *      `allowedImageDomains` staan.
+ *   3. AST-scan van `Component.tsx` voor `forbiddenGlobals`: alleen
+ *      identifier-references die NIET in strings, comments, property-keys of
+ *      member-expression-properties zitten. Elimineert false-positives van
+ *      iteratie 1 (bv "Function" in doc-comment triggerde error).
+ *   4. String-literal-scan voor image-URL-domeinen: elke `http(s)://...` in
+ *      een string- of template-literal moet in `allowedImageDomains` staan,
+ *      TENZIJ het een `{{image:role|query}}`-token is (die worden na
+ *      validatie door de Design4-backend vervangen).
  *
- * Niet in deze iteratie (komt in iteratie 2 met @typescript-eslint/parser):
- *   - Echte AST-scan voor imports, exports, hook-volgorde
- *   - `requiresSsrGuard` check
- *   - Export-name-match met filename
- *
- * Doel iteratie 1: kunnen aantonen dat manifest-shape + import-whitelist +
- * eerste veiligheidsnet werken op AI-output, zonder dep op eslint-parser.
+ * Parse-fallback: als AST-parsen faalt (syntax error), degradeert de scan
+ * naar tekst-scan zodat we nog steeds iets terugmelden. Dat is geen
+ * kwaliteits-regressie omdat een niet-parseable Component.tsx sowieso niet
+ * te bouwen is — Vite zou ook falen — dus de fallback fungeert alleen als
+ * defense-in-depth.
  */
 
 export interface PackageFiles {
@@ -90,62 +94,238 @@ function validateImportWhitelist(
 }
 
 // -----------------------------------------------------------------------------
-// Text-scan Component.tsx (naïef; AST komt in iteratie 2)
+// AST-walking helpers
 // -----------------------------------------------------------------------------
 
-const IDENTIFIER_BOUNDARY = /[A-Za-z0-9_$]/;
+type Node = TSESTree.Node;
 
-function containsIdentifier(source: string, name: string): boolean {
-  // Naïeve identifier-detectie: character voor en na moet NIET-identifier zijn.
-  // AST-scan is beter maar vereist parser (iteratie 2).
-  let idx = source.indexOf(name);
-  while (idx !== -1) {
-    const before = idx > 0 ? source[idx - 1] : '';
-    const after = idx + name.length < source.length ? source[idx + name.length] : '';
-    if (!IDENTIFIER_BOUNDARY.test(before ?? '') && !IDENTIFIER_BOUNDARY.test(after ?? '')) {
-      return true;
-    }
-    idx = source.indexOf(name, idx + 1);
+function parseSource(source: string): TSESTree.Program | null {
+  try {
+    return parse(source, {
+      // loc + range MOETEN true zijn — @typescript-eslint/parser v7.7.1
+      // crasht anders met "Cannot read properties of undefined (reading '0')"
+      // op typische TSX-input met imports + JSX-return. Kleine mem-overhead
+      // maar functioneel vereist.
+      loc: true,
+      range: true,
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      ecmaFeatures: { jsx: true },
+    }) as TSESTree.Program;
+  } catch {
+    return null;
   }
-  return false;
 }
+
+/**
+ * Walk elke node in de AST. Volgorde is DFS pre-order.
+ * Bewust minimaal (geen visitor-pattern lib) om extra deps te vermijden.
+ */
+function walk(node: Node | null | undefined, visit: (n: Node, parent: Node | null) => void, parent: Node | null = null): void {
+  if (!node || typeof node !== 'object') return;
+  if ((node as { type?: string }).type) visit(node, parent);
+  for (const key of Object.keys(node)) {
+    if (key === 'parent' || key === 'loc' || key === 'range') continue;
+    const child = (node as unknown as Record<string, unknown>)[key];
+    if (Array.isArray(child)) {
+      for (const c of child) {
+        if (c && typeof c === 'object' && (c as { type?: string }).type) {
+          walk(c as Node, visit, node);
+        }
+      }
+    } else if (child && typeof child === 'object' && (child as { type?: string }).type) {
+      walk(child as Node, visit, node);
+    }
+  }
+}
+
+/**
+ * Bepaalt of een Identifier-node een "reference" is naar een echte binding
+ * (dus verwijzing naar een global of lokale variabele) — en NIET een
+ * property-key, MemberExpression-property, ImportSpecifier-name, of
+ * declaration-id.
+ */
+function isReference(identifier: Node, parent: Node | null): boolean {
+  if (!parent) return true;
+  const p = parent as Node & { type: string; computed?: boolean; key?: Node; property?: Node; id?: Node; imported?: Node; local?: Node; exported?: Node; params?: Node[]; name?: Node };
+
+  switch (p.type as string) {
+    // obj.foo — foo is property-name, geen reference naar global 'foo'
+    case 'MemberExpression':
+      if (p.property === identifier && !p.computed) return false;
+      return true;
+
+    // { foo: 1 } / { foo }
+    case 'Property':
+    case 'PropertyDefinition':
+    case 'MethodDefinition':
+    case 'TSPropertySignature':
+    case 'TSMethodSignature':
+      // Shorthand-property `{ fetch }` IS een reference; alleen computed:false
+      // met identifier ALLEEN als key skippen.
+      if (p.key === identifier && !p.computed) {
+        // Check shorthand: bij Property met shorthand=true is key === value
+        const withShort = p as unknown as { shorthand?: boolean; value?: Node };
+        if (withShort.shorthand) return true;
+        return false;
+      }
+      return true;
+
+    // import { fetch } from '...' → fetch is een geïmporteerde binding, niet global
+    case 'ImportSpecifier':
+    case 'ImportDefaultSpecifier':
+    case 'ImportNamespaceSpecifier':
+    case 'ExportSpecifier':
+      return false;
+
+    // Declarations: var/let/const/function/class → binding declaration, geen ref
+    case 'VariableDeclarator':
+      if (p.id === identifier) return false;
+      return true;
+    case 'FunctionDeclaration':
+    case 'FunctionExpression':
+    case 'ArrowFunctionExpression':
+    case 'ClassDeclaration':
+    case 'ClassExpression':
+      if (p.id === identifier) return false;
+      return true;
+
+    // Function parameter names
+    case 'AssignmentPattern':
+    case 'RestElement':
+    case 'ArrayPattern':
+    case 'ObjectPattern':
+      // Kan onderdeel zijn van param destructuring — skip als declaration
+      return false;
+
+    // Labels/type annotaties
+    case 'LabeledStatement':
+    case 'BreakStatement':
+    case 'ContinueStatement':
+      return false;
+
+    // TypeScript type-annotaties: identifiers hier zijn type-referenties, geen
+    // runtime-globals (bv `let x: fetch` zou runtime-veilig zijn)
+    case 'TSTypeReference':
+    case 'TSQualifiedName':
+    case 'TSInterfaceDeclaration':
+    case 'TSTypeAliasDeclaration':
+    case 'TSEnumDeclaration':
+    case 'TSTypeParameter':
+    case 'TSTypeAnnotation':
+    case 'TSInterfaceHeritage':
+    case 'TSExpressionWithTypeArguments':
+      return false;
+
+    // JSX
+    case 'JSXAttribute':
+      // <Foo bar={x} /> — bar is attribute-name, geen ref
+      return false;
+    case 'JSXOpeningElement':
+    case 'JSXClosingElement':
+      // <fetch /> — element-name is een JSX-component-referentie, ZOU een ref
+      // moeten zijn. Maar in ons geval verwacht validator dat identifiers zoals
+      // Fragment/Foo hier komen; forbidden-globals als JSX-element is de-facto
+      // een gebruik ("fetch als component"). We tellen als reference.
+      return true;
+
+    default:
+      return true;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Forbidden-globals (AST-based)
+// -----------------------------------------------------------------------------
 
 function validateForbiddenGlobals(
   componentTsx: string,
+  ast: TSESTree.Program | null,
   issues: ValidationIssue[],
 ): void {
-  for (const g of POLICY_V1_0.forbiddenGlobals) {
-    if (containsIdentifier(componentTsx, g)) {
-      issues.push({
-        severity: 'error',
-        rule: 'policy.forbidden-global',
-        message: `Component.tsx bevat referentie naar verboden global "${g}". AST-verificatie in iteratie 2 zal false-positives (bijv. string-literals) elimineren.`,
-        location: { file: 'Component.tsx' },
-      });
+  const forbidden = new Set<string>(POLICY_V1_0.forbiddenGlobals);
+  const found = new Set<string>();
+
+  if (ast) {
+    walk(ast, (node, parent) => {
+      if (node.type !== 'Identifier') return;
+      const idNode = node as TSESTree.Identifier;
+      if (!forbidden.has(idNode.name)) return;
+      if (!isReference(node, parent)) return;
+      found.add(idNode.name);
+    });
+  } else {
+    // Parse-fail fallback: naïeve tekst-scan zoals iteratie 1.
+    const IDENT_BOUND = /[A-Za-z0-9_$]/;
+    for (const g of forbidden) {
+      let idx = componentTsx.indexOf(g);
+      while (idx !== -1) {
+        const before = idx > 0 ? componentTsx[idx - 1] : '';
+        const after = idx + g.length < componentTsx.length ? componentTsx[idx + g.length] : '';
+        if (!IDENT_BOUND.test(before ?? '') && !IDENT_BOUND.test(after ?? '')) {
+          found.add(g);
+          break;
+        }
+        idx = componentTsx.indexOf(g, idx + 1);
+      }
     }
+  }
+
+  for (const g of found) {
+    issues.push({
+      severity: 'error',
+      rule: 'policy.forbidden-global',
+      message: `Component.tsx bevat referentie naar verboden global "${g}".`,
+      location: { file: 'Component.tsx' },
+    });
   }
 }
 
 // -----------------------------------------------------------------------------
-// Image-URL domein-scan
+// Image-URL domein-scan (string-literals + template-literals in de AST)
 // -----------------------------------------------------------------------------
 
-const URL_REGEX = /https?:\/\/([^\s"'`)]+)/g;
+const URL_REGEX_ALL = /https?:\/\/([^\s"'`)]+)/g;
 
-function validateImageDomains(componentTsx: string, issues: ValidationIssue[]): void {
+function extractStringsFromAst(ast: TSESTree.Program): string[] {
+  const out: string[] = [];
+  walk(ast, (node) => {
+    if (node.type === 'Literal') {
+      const v = (node as TSESTree.Literal).value;
+      if (typeof v === 'string') out.push(v);
+    } else if (node.type === 'TemplateLiteral') {
+      const tl = node as TSESTree.TemplateLiteral;
+      for (const q of tl.quasis) out.push(q.value.cooked ?? q.value.raw);
+    }
+  });
+  return out;
+}
+
+function validateImageDomains(
+  componentTsx: string,
+  ast: TSESTree.Program | null,
+  issues: ValidationIssue[],
+): void {
   const allowed = POLICY_V1_0.allowedImageDomains;
-  const matches = componentTsx.matchAll(URL_REGEX);
-  for (const m of matches) {
-    const urlPath = m[1] ?? '';
-    const host = urlPath.split('/')[0] ?? '';
-    const okDomain = allowed.some((d) => host === d || host.endsWith(`.${d}`));
-    if (!okDomain) {
-      issues.push({
-        severity: 'error',
-        rule: 'policy.image-domain-not-allowed',
-        message: `URL naar "${host}" niet in POLICY_V1_0.allowedImageDomains. Toegestaan: ${allowed.join(', ')}`,
-        location: { file: 'Component.tsx' },
-      });
+  const strings = ast ? extractStringsFromAst(ast) : [componentTsx];
+  const seenHosts = new Set<string>();
+
+  for (const s of strings) {
+    const matches = s.matchAll(URL_REGEX_ALL);
+    for (const m of matches) {
+      const urlPath = m[1] ?? '';
+      const host = urlPath.split('/')[0] ?? '';
+      if (seenHosts.has(host)) continue;
+      seenHosts.add(host);
+      const okDomain = allowed.some((d) => host === d || host.endsWith(`.${d}`));
+      if (!okDomain) {
+        issues.push({
+          severity: 'error',
+          rule: 'policy.image-domain-not-allowed',
+          message: `URL naar "${host}" niet in POLICY_V1_0.allowedImageDomains. Toegestaan: ${allowed.join(', ')}`,
+          location: { file: 'Component.tsx' },
+        });
+      }
     }
   }
 }
@@ -168,8 +348,9 @@ export function validatePackage(files: PackageFiles): ValidationResult {
     validateImportWhitelist(manifest, issues);
   }
   if (files.componentTsx) {
-    validateForbiddenGlobals(files.componentTsx, issues);
-    validateImageDomains(files.componentTsx, issues);
+    const ast = parseSource(files.componentTsx);
+    validateForbiddenGlobals(files.componentTsx, ast, issues);
+    validateImageDomains(files.componentTsx, ast, issues);
   }
 
   const errorCount = issues.filter((i) => i.severity === 'error').length;

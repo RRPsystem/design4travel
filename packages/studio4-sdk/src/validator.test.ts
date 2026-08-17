@@ -202,6 +202,60 @@ eval('doStuff()');
     expect(r.ok).toBe(false);
     expect(r.issues.some((i) => i.message.includes('eval'))).toBe(true);
   });
+
+  // AST-scan (iteratie 2) elimineert false-positives van de tekst-scan.
+  it('accepteert "Function" in JSDoc/line-comment (false-positive fix)', () => {
+    const tsx = VALID_TSX + `
+// Design4-backend media-search vervangt Function-tokens na validatie.
+/* Function-string in block-comment mag ook. */
+`;
+    const r = validatePackage(makeFiles({ componentTsx: tsx }));
+    expect(r.ok).toBe(true);
+  });
+
+  it('accepteert "fetch" in string-literal (false-positive fix)', () => {
+    const tsx = VALID_TSX + `
+const doc = { note: 'we do NOT use fetch here, data comes from props' };
+`;
+    const r = validatePackage(makeFiles({ componentTsx: tsx }));
+    expect(r.ok).toBe(true);
+  });
+
+  it('accepteert "eval" als property-key op eigen object (false-positive fix)', () => {
+    const tsx = VALID_TSX + `
+const helpers = { eval: (x: number) => x + 1 };
+const y = helpers.eval(5);
+`;
+    const r = validatePackage(makeFiles({ componentTsx: tsx }));
+    expect(r.ok).toBe(true);
+  });
+
+  it('accepteert obj.fetch — property-access is geen global-ref', () => {
+    const tsx = VALID_TSX + `
+const service: { fetch: () => void } = { fetch: () => {} };
+service.fetch();
+`;
+    const r = validatePackage(makeFiles({ componentTsx: tsx }));
+    expect(r.ok).toBe(true);
+  });
+
+  it('blijft fetch afwijzen in template-literal expression `${fetch()}`', () => {
+    const tsx = VALID_TSX + `
+const s = \`live: \${fetch('/api').toString()}\`;
+`;
+    const r = validatePackage(makeFiles({ componentTsx: tsx }));
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.message.includes('fetch'))).toBe(true);
+  });
+
+  it('blijft { fetch } shorthand-reference afwijzen', () => {
+    const tsx = VALID_TSX + `
+const dep = { fetch };
+`;
+    const r = validatePackage(makeFiles({ componentTsx: tsx }));
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.message.includes('fetch'))).toBe(true);
+  });
 });
 
 // -----------------------------------------------------------------------------

@@ -15,6 +15,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@typescript-eslint/parser": "^7.7.1",
+    "@typescript-eslint/types": "^7.7.1",
     "zod": "^3.23.8"
   }
 }
