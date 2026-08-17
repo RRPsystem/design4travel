@@ -161,6 +161,57 @@ async function resolveImageTokens(
 }
 
 // -----------------------------------------------------------------------------
+// Content-source helper (internal fetch met service-role)
+// -----------------------------------------------------------------------------
+
+interface TravelContentLite {
+  title?: string;
+  intro?: string;
+  days?: number;
+  countries?: string[];
+  destinations?: Array<{ name?: string; country?: string }>;
+  hero_image_hint?: string;
+  meta?: { source_kind?: string; hash?: string };
+}
+
+async function fetchContentSourceById(
+  supabaseUrl: string,
+  serviceKey: string,
+  ownerUserId: string,
+  contentSourceId: string,
+): Promise<TravelContentLite | null> {
+  try {
+    const r = await fetch(
+      `${supabaseUrl}/rest/v1/content_sources?id=eq.${contentSourceId}&owner_user_id=eq.${ownerUserId}&select=content`,
+      { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` } },
+    );
+    if (!r.ok) return null;
+    const rows = await r.json() as Array<{ content?: TravelContentLite }>;
+    return rows[0]?.content ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function buildFixtureHintFromContent(c: TravelContentLite): string {
+  const parts: string[] = [];
+  if (c.title) parts.push(`Titel: ${c.title}`);
+  if (c.days) parts.push(`Duur: ${c.days} dagen`);
+  if (c.countries?.length) parts.push(`Landen: ${c.countries.join(', ')}`);
+  if (c.destinations?.length) {
+    const names = c.destinations
+      .map((d) => d.name)
+      .filter(Boolean)
+      .slice(0, 8)
+      .join(', ');
+    if (names) parts.push(`Bestemmingen: ${names}`);
+  }
+  if (c.hero_image_hint) parts.push(`Hero-thema: ${c.hero_image_hint}`);
+  if (c.intro) parts.push(`Sfeer: ${c.intro.slice(0, 240)}`);
+  return parts.join(' — ');
+}
+
+// -----------------------------------------------------------------------------
 // Metrics logging (fail-open)
 // -----------------------------------------------------------------------------
 
@@ -231,6 +282,7 @@ Deno.serve(async (req: Request) => {
     reference_path?: string;
     chat_prompt?: string;
     fixture_hint?: string;
+    content_source_id?: string;
     previous_package?: { manifest: Record<string, unknown>; componentTsx: string };
     previous_feedback?: {
       match_score: number;
@@ -264,6 +316,23 @@ Deno.serve(async (req: Request) => {
       supabaseUrl, serviceKey, 'design-references', body.reference_path, 600,
     );
 
+    // Content-source: als opgegeven, fetch gesanitiseerd TravelContent en
+    // vul fixture_hint aan met een korte samenvatting voor de AI-prompt.
+    // Alleen title/days/destinations/hero_image_hint/intro — geen ruwe DB-
+    // fields, geen API-keys, geen prijzen die per boeking variëren.
+    let effectiveFixtureHint = body.fixture_hint ?? '';
+    if (body.content_source_id && auth.kind === 'user' && auth.userId) {
+      const content = await fetchContentSourceById(
+        supabaseUrl, serviceKey, auth.userId, body.content_source_id,
+      );
+      if (content) {
+        const hint = buildFixtureHintFromContent(content);
+        effectiveFixtureHint = hint
+          ? (effectiveFixtureHint ? `${effectiveFixtureHint}\n\nReis-context: ${hint}` : `Reis-context: ${hint}`)
+          : effectiveFixtureHint;
+      }
+    }
+
     // Modus: initial (nieuwe generatie) of revision (verbetering op vorige)
     const isRevision = Boolean(body.previous_package?.manifest && body.previous_package?.componentTsx);
 
@@ -281,7 +350,7 @@ Deno.serve(async (req: Request) => {
             body.previous_package!.componentTsx,
             body.previous_feedback ?? null,
           )
-        : buildInitialUserMessage(imageUrl, body.chat_prompt ?? '', body.fixture_hint ?? '');
+        : buildInitialUserMessage(imageUrl, body.chat_prompt ?? '', effectiveFixtureHint);
 
       const messages = i === 1
         ? [firstMessage]
@@ -391,6 +460,7 @@ Deno.serve(async (req: Request) => {
       final_package: finalPackage,
       final_validation: finalValidation,
       image_tokens: tokenResolve,
+      content_source_id: body.content_source_id ?? null,
     }, null, 2),
     { headers: { ...CORS, 'Content-Type': 'application/json' } },
   );

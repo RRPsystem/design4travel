@@ -21,9 +21,18 @@
   # vanuit root voor @design4/studio4-sdk workspace-dep.
   command = "npm install --legacy-peer-deps && npm run build --workspace packages/studio4-preview-host"
   publish = "packages/studio4-preview-host/dist"
+  functions = "packages/studio4-preview-host/netlify/functions"
 
 [build.environment]
   NODE_VERSION = "20"
+
+# validate-package is de canonical AST-validator (Node-side, @design4/studio4-sdk
+# import), aangeroepen door Design4-Edge-Function sandbox-build-trigger als
+# security-gate vóór build. Bearer-auth met CANONICAL_VALIDATOR_SECRET.
+[[redirects]]
+  from = "/api/validate-package"
+  to = "/.netlify/functions/validate-package"
+  status = 200
 
 # SPA fallback: alle routes serven index.html.
 [[redirects]]

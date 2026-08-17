@@ -57,10 +57,23 @@ interface CompareFeedback {
   differences: Array<{ area: string; severity: string; suggestion: string }>;
 }
 
+// Content-source keuzes voor v1. Later dynamisch via resolve-content-source
+// endpoint dat een lijst kan teruggeven; nu hardcoded voor spike.
+type ContentSourceChoice =
+  | { key: 'none'; label: 'Geen (blanco ontwerp)' }
+  | { key: 'safari'; label: 'Safari Zuid-Afrika + Mauritius (voorbeeld)'; kind: 'fixture'; sourceId: 'safari-zuid-afrika-mauritius-001' };
+
+const CONTENT_SOURCE_CHOICES: ReadonlyArray<ContentSourceChoice> = [
+  { key: 'none', label: 'Geen (blanco ontwerp)' },
+  { key: 'safari', label: 'Safari Zuid-Afrika + Mauritius (voorbeeld)', kind: 'fixture', sourceId: 'safari-zuid-afrika-mauritius-001' },
+];
+
 export function SimpleView({ accessToken }: { accessToken: string }) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [file, setFile] = useState<File | null>(null);
   const [prompt, setPrompt] = useState('');
+  const [contentChoice, setContentChoice] = useState<ContentSourceChoice['key']>('none');
+  const [contentSourceId, setContentSourceId] = useState<string | null>(null);
   const [statusText, setStatusText] = useState('');
   const [errorText, setErrorText] = useState<string | null>(null);
   const [errorRaw, setErrorRaw] = useState<string | null>(null);
@@ -131,6 +144,7 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
     setCurrentPackage(null);
     setReferencePath(null);
     setCaptureJobId(null);
+    setContentSourceId(null);
     autoRepairedRef.current = false;
     setPhase('generating');
 
@@ -144,12 +158,32 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
       if (upl.error) throw new Error(`upload_${upl.error.message}`);
       setReferencePath(path);
 
+      // 1b. Content-source resolven (indien gekozen)
+      let resolvedContentSourceId: string | null = null;
+      const choice = CONTENT_SOURCE_CHOICES.find((c) => c.key === contentChoice);
+      if (choice && choice.key !== 'none') {
+        setStatusText('Reis-inhoud ophalen…');
+        const rc = await fetch(`${SUPABASE_URL}/functions/v1/resolve-content-source`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind: choice.kind, source_id: choice.sourceId }),
+        }).then((r) => r.json());
+        if (!rc.ok || !rc.content_source_id) throw new Error(rc.error ?? 'content_source_failed');
+        resolvedContentSourceId = rc.content_source_id as string;
+        setContentSourceId(resolvedContentSourceId);
+      }
+
       // 2. AI genereert pakket
       setStatusText('AI ontwerpt je component…');
       const genR = await fetch(`${SUPABASE_URL}/functions/v1/generate-studio4-component`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reference_path: path, chat_prompt: prompt, fixture_hint: '' }),
+        body: JSON.stringify({
+          reference_path: path,
+          chat_prompt: prompt,
+          fixture_hint: '',
+          content_source_id: resolvedContentSourceId,
+        }),
       }).then((r) => r.json());
       if (!genR.ok || !genR.final_package) throw new Error(genR.error ?? 'generate_failed');
       setCurrentPackage(genR.final_package as PkgFiles);
@@ -176,6 +210,7 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
           component_tsx: genR.final_package.componentTsx,
           preview_shell_version: PREVIEW_SHELL_VERSION,
           fixture_path: null,
+          content_source_id: resolvedContentSourceId,
         }),
       }).then((r) => r.json());
       if (!build.ok) throw new Error(build.error ?? 'build_failed');
@@ -310,12 +345,14 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
 
     const tStart = Date.now();
     try {
-      // 1. generate met previous_package
+      // 1. generate met previous_package (behoud content_source_id zodat
+      // de revise dezelfde reis-context blijft gebruiken)
       const t1 = Date.now();
       const genR = await postEdge('generate-studio4-component', {
         reference_path: referencePath,
         chat_prompt: userPrompt,
         fixture_hint: '',
+        content_source_id: contentSourceId,
         previous_package: currentPackage,
         previous_feedback: feedback ?? undefined,
       });
@@ -339,6 +376,7 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
         component_tsx: finalPkg.componentTsx,
         preview_shell_version: PREVIEW_SHELL_VERSION,
         fixture_path: null,
+        content_source_id: contentSourceId,
       });
       // eslint-disable-next-line no-console
       console.log('[Design4 revise] step 2 build_from_ai ok', {
@@ -416,6 +454,7 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
         manifest: currentPackage.manifest,
         component_tsx: currentPackage.componentTsx,
         reference_path: referencePath,
+        content_source_id: contentSourceId,
       });
       if (error) {
         if (error.code === '23505') {
@@ -437,6 +476,8 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
     destroyIfActive();
     setFile(null);
     setPrompt('');
+    setContentChoice('none');
+    setContentSourceId(null);
     setExposeUrl(null);
     setErrorText(null);
     setErrorRaw(null);
@@ -683,6 +724,24 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)}
               />
             </label>
+          </div>
+
+          <div>
+            <label className="block text-xs uppercase tracking-widest text-gray-500 mb-2">
+              Reis-inhoud (optioneel)
+            </label>
+            <select
+              value={contentChoice}
+              onChange={(e) => setContentChoice(e.target.value as ContentSourceChoice['key'])}
+              className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm text-gray-100 focus:border-white/60 focus:outline-none"
+            >
+              {CONTENT_SOURCE_CHOICES.map((c) => (
+                <option key={c.key} value={c.key}>{c.label}</option>
+              ))}
+            </select>
+            <div className="mt-1 text-[11px] text-gray-500">
+              Kies een voorbeeldreis om je ontwerp met echte titels/bestemmingen te vullen. Later komen hier je eigen reizen uit TravelCompositor en Studio4.
+            </div>
           </div>
 
           <div>

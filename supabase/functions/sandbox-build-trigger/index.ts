@@ -646,14 +646,98 @@ async function handleDestroy(apiKey: string, sandboxId: string) {
 }
 
 /**
+ * Canonical validator gate — server-to-server HTTP call naar
+ * previewdesign4.netlify.app/api/validate-package (Node, echte AST-scan).
+ *
+ * FAIL-SAFE: als env-vars ontbreken → return error, NIET bypassen. Zonder
+ * canonical-check mag geen build. Dit is de architecturale eis:
+ * "Deno-pass alleen mag nooit voldoende zijn om code uit te voeren."
+ */
+async function callCanonicalValidator(
+  manifest: Record<string, unknown>,
+  componentTsx: string,
+): Promise<{ ok: true } | { ok: false; error: string; issues?: unknown }> {
+  const url = Deno.env.get('CANONICAL_VALIDATOR_URL');
+  const secret = Deno.env.get('CANONICAL_VALIDATOR_SECRET');
+  if (!url || !secret) {
+    return {
+      ok: false,
+      error: 'canonical_validator_not_configured — refusing to build without canonical gate',
+    };
+  }
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        manifestJson: JSON.stringify(manifest),
+        componentTsx,
+      }),
+    });
+    const j = await r.json().catch(() => null) as {
+      ok?: boolean;
+      issues?: unknown;
+      error?: string;
+    } | null;
+    if (!r.ok) {
+      return { ok: false, error: `canonical_http_${r.status}: ${j?.error ?? ''}` };
+    }
+    if (!j || j.ok !== true) {
+      return { ok: false, error: 'canonical_validation_rejected', issues: j?.issues };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: `canonical_call_failed: ${(e as Error).message}` };
+  }
+}
+
+/**
+ * Content-source resolver (internal call naar Design4 resolve-content-source
+ * Edge Function met service-role). Voor build_from_ai vertaalt content_source_id
+ * naar gevalideerd TravelContent-JSON dat in de sandbox als fixture landt.
+ */
+async function fetchContentSourceInternal(
+  supabaseUrl: string,
+  serviceKey: string,
+  ownerUserId: string,
+  contentSourceId: string,
+): Promise<{ ok: true; content: unknown } | { ok: false; error: string }> {
+  // We hergebruiken de resolve-content-source niet direct (die requires kind+source_id).
+  // In plaats daarvan: haal de al-opgeslagen content_sources-row op via PostgREST
+  // met service-role. Dit garandeert dat we exact dezelfde versie/hash krijgen
+  // waarmee de generate al gedraaid heeft.
+  try {
+    const r = await fetch(
+      `${supabaseUrl}/rest/v1/content_sources?id=eq.${contentSourceId}&owner_user_id=eq.${ownerUserId}&select=content,hash,version`,
+      { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` } },
+    );
+    if (!r.ok) return { ok: false, error: `content_source_lookup_${r.status}` };
+    const rows = await r.json() as Array<{ content?: unknown }>;
+    if (!rows.length || !rows[0]?.content) return { ok: false, error: 'content_source_not_found' };
+    return { ok: true, content: rows[0].content };
+  } catch (e) {
+    return { ok: false, error: `content_source_fetch_failed: ${(e as Error).message}` };
+  }
+}
+
+/**
  * build_from_ai — vervangt build voor pakketten die door
  * generate-studio4-component zijn geproduceerd. Preview-shell template wordt
  * uit `preview-shell-templates`-bucket gedownload in de sandbox, uitgepakt,
  * en de AI-Component + manifest + fixture worden erin geplakt.
  *
+ * SECURITY-GATE: allereerst wordt de canonical AST-validator (Node-side,
+ * previewdesign4.netlify.app) aangeroepen. Zonder pass → geen build. Dit is
+ * de eind-gate; de Deno-side pre-check in generate-studio4-component is
+ * alleen een snelle iteratie-loop-hint, NIET voldoende voor executie.
+ *
  * Input: manifest (parsed JSON), componentTsx (string), preview_shell_version
- * (bijv. "0.0.1"), fixture_path (in `sandbox-archives`; bijv. de safari
- * travel-fixture).
+ * (bijv. "0.0.1"), fixture_path (legacy: pad in `sandbox-archives`),
+ * content_source_id (nieuw: verwijst naar content_sources-row met
+ * gevalideerd TravelContent).
  *
  * Sandbox blijft leven na afloop; volgende call is `expose`.
  */
@@ -661,11 +745,13 @@ async function handleBuildFromAi(
   apiKey: string,
   supabaseUrl: string,
   serviceKey: string,
+  auth: AuthResult,
   sandboxId: string,
   manifest: Record<string, unknown>,
   componentTsx: string,
   previewShellVersion: string,
   fixturePath: string | null,
+  contentSourceId: string | null,
 ) {
   const t0 = Date.now();
   const timings: Record<string, number> = {};
@@ -691,8 +777,61 @@ async function handleBuildFromAi(
     };
   }
 
+  // SECURITY-GATE 1: canonical AST-validator moet slagen vóór ANY sandbox-werk.
+  const tCanonical = Date.now();
+  const canonical = await callCanonicalValidator(manifest, componentTsx);
+  timings.canonical_validator_ms = Date.now() - tCanonical;
+  if (!canonical.ok) {
+    return {
+      ok: false,
+      phase: 'build_from_ai',
+      sandbox_id: sandboxId,
+      error: `canonical_validation_failed: ${canonical.error}`,
+      canonical_issues: canonical.issues,
+      duration_total_ms: Date.now() - t0,
+      timings,
+      logs,
+    };
+  }
+
+  // Content-source fetch (indien gevraagd): resolve gevalideerd TravelContent
+  // om als fixture in sandbox te droppen. Bewust NIET raw TC-data — alleen het
+  // strict-schema TravelContent-object gaat de sandbox in.
+  let travelContentJson: string | null = null;
+  if (contentSourceId) {
+    const ownerUserId = auth.kind === 'user' ? auth.userId! : null;
+    if (!ownerUserId) {
+      return {
+        ok: false,
+        phase: 'build_from_ai',
+        sandbox_id: sandboxId,
+        error: 'content_source_requires_user_auth',
+        duration_total_ms: Date.now() - t0,
+        timings,
+        logs,
+      };
+    }
+    const tContent = Date.now();
+    const fetched = await fetchContentSourceInternal(
+      supabaseUrl, serviceKey, ownerUserId, contentSourceId,
+    );
+    timings.content_source_fetch_ms = Date.now() - tContent;
+    if (!fetched.ok) {
+      return {
+        ok: false,
+        phase: 'build_from_ai',
+        sandbox_id: sandboxId,
+        error: `content_source_fetch_failed: ${fetched.error}`,
+        duration_total_ms: Date.now() - t0,
+        timings,
+        logs,
+      };
+    }
+    travelContentJson = JSON.stringify(fetched.content);
+  }
+
   try {
-    // Signed URLs: preview-shell template + optionele fixture
+    // Signed URLs: preview-shell template + optionele legacy fixture
     const tUrls = Date.now();
     const shellUrl = await signedDownloadUrl(
       supabaseUrl, serviceKey,
@@ -720,6 +859,13 @@ async function handleBuildFromAi(
     const tWrite = Date.now();
     await sandbox.files.write(tmpComponent, componentTsx);
     await sandbox.files.write(tmpManifest, JSON.stringify(manifest, null, 2));
+    // TravelContent-JSON (indien content_source_id gebruikt) landt als
+    // /tmp/ai-travel-<uniq>.json en wordt in patch-step naar
+    // /home/user/build/src/fixtures/travel.json gecopied.
+    const tmpTravel = travelContentJson ? `/tmp/ai-travel-${uniq}.json` : null;
+    if (tmpTravel && travelContentJson) {
+      await sandbox.files.write(tmpTravel, travelContentJson);
+    }
     timings.write_ai_files_ms = Date.now() - tWrite;
 
     // App.tsx template — build up on Deno-side, write into sandbox
@@ -759,10 +905,12 @@ export default function App() {
         label: 'patch_component_and_manifest',
         cmd: `set -e
 mkdir -p /home/user/build/src/components/Site/sections
+mkdir -p /home/user/build/src/fixtures
 rm -f /home/user/build/src/components/Site/sections/GeneratedComponent.tsx
 cp ${tmpComponent} /home/user/build/src/components/Site/sections/${fileName}
 cp ${tmpManifest} /home/user/build/src/components/Site/sections/manifest.json
 cp ${tmpApp} /home/user/build/src/App.tsx
+${tmpTravel ? `cp ${tmpTravel} /home/user/build/src/fixtures/travel.json` : '# no content-source; no travel.json'}
 ls /home/user/build/src/components/Site/sections/`,
         timeoutMs: 15_000,
       },
@@ -983,6 +1131,7 @@ Deno.serve(async (req: Request) => {
     component_tsx?: string;
     preview_shell_version?: string;
     fixture_path?: string;
+    content_source_id?: string;
   } = {};
   try {
     body = await req.json();
@@ -1048,11 +1197,13 @@ Deno.serve(async (req: Request) => {
         apiKey,
         supabaseUrl,
         serviceKey,
+        auth,
         body.sandbox_id,
         body.manifest,
         body.component_tsx,
         body.preview_shell_version || '0.0.1',
         body.fixture_path || null,
+        body.content_source_id || null,
       );
       return new Response(JSON.stringify(result, null, 2), {
         headers: { ...CORS, 'Content-Type': 'application/json' },
