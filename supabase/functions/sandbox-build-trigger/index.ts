@@ -782,11 +782,21 @@ async function handleBuildFromAi(
   const canonical = await callCanonicalValidator(manifest, componentTsx);
   timings.canonical_validator_ms = Date.now() - tCanonical;
   if (!canonical.ok) {
+    // Serialiseer issues in de error-string zodat de frontend 'Technische
+    // details'-uitklap ze toont — anders zien we alleen 'rejected' zonder
+    // waarom, en dat maakt debug onmogelijk.
+    let issuesSummary = '';
+    if (Array.isArray(canonical.issues)) {
+      issuesSummary = (canonical.issues as Array<{ rule?: string; message?: string; location?: { file?: string } }>)
+        .slice(0, 5)
+        .map((i, idx) => `${idx + 1}. [${i.rule ?? '?'}] ${i.message ?? '?'}${i.location?.file ? ` (${i.location.file})` : ''}`)
+        .join(' | ');
+    }
     return {
       ok: false,
       phase: 'build_from_ai',
       sandbox_id: sandboxId,
-      error: `canonical_validation_failed: ${canonical.error}`,
+      error: `canonical_validation_failed: ${canonical.error}${issuesSummary ? ` | issues: ${issuesSummary}` : ''}`,
       canonical_issues: canonical.issues,
       duration_total_ms: Date.now() - t0,
       timings,
