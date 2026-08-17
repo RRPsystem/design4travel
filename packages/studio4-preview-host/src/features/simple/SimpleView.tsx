@@ -39,9 +39,13 @@ function friendlyError(rawError: string | null | undefined): string {
   const r = rawError.toLowerCase();
   if (r.includes('rate_limit_concurrent')) return 'Je hebt momenteel al meerdere ontwerpen tegelijk lopen. Wacht tot een ervan klaar is.';
   if (r.includes('rate_limit_hourly')) return 'Je hebt vandaag al veel ontwerpen gemaakt. Probeer het over een uur opnieuw.';
-  if (r.includes('missing_bearer_token') || r.includes('auth_verify')) return 'Je sessie is verlopen. Log opnieuw in.';
+  if (r.includes('missing_bearer_token') || r.includes('auth_verify') || r.includes('sessie is verlopen')) return 'Je sessie is verlopen. Log opnieuw in.';
   if (r.includes('reference_path_required')) return 'Er ging iets mis met de afbeelding. Kies een ander bestand en probeer opnieuw.';
+  if (r.includes('sandbox_ownership_mismatch') || r.includes('sandbox_id_not_found')) return 'De voorbeeldomgeving is verlopen. Klik "Opnieuw proberen" om opnieuw te beginnen.';
+  if (r.includes('sandbox_connect') || r.includes('sandbox is not running')) return 'De voorbeeldomgeving is verlopen. Klik "Opnieuw proberen" om opnieuw te beginnen.';
+  if (r.includes('deadline_exceeded') || r.includes('timeout')) return 'Het duurde te lang. Probeer opnieuw met een eenvoudigere opdracht.';
   if (r.includes('anthropic_')) return 'De AI-assistent had een probleem. Probeer het opnieuw.';
+  if (r.includes('no_tool_use_in_response')) return 'De AI gaf een onvolledig antwoord. Probeer je opdracht anders te formuleren.';
   if (r.includes('step_failed')) return 'Het bouwen van je ontwerp mislukte. Probeer opnieuw met een andere afbeelding of opdracht.';
   return 'Er ging iets mis. Probeer het opnieuw.';
 }
@@ -72,6 +76,7 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
   const [chatInput, setChatInput] = useState('');
   const [reviseBusy, setReviseBusy] = useState(false);
   const [reviseStatus, setReviseStatus] = useState<string>('');
+  const [reviseRawError, setReviseRawError] = useState<string | null>(null);
   const [autoRepairBusy, setAutoRepairBusy] = useState(false);
 
   // Destroy sandbox bij tab-sluiten. Gebruik fetch met keepalive zodat de call
@@ -234,6 +239,30 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, referencePath, captureJobId, currentPackage]);
 
+  /**
+   * POST helper: doet fetch, geeft duidelijke error terug ALS response niet ok
+   * of body geen ok:true heeft. Zo krijgen we consistente errors i.p.v. silent
+   * "Unexpected end of JSON input" bij 500-HTML-responses.
+   */
+  async function postEdge(fn: string, body: unknown): Promise<Record<string, unknown>> {
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/${fn}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const text = await r.text();
+    let json: Record<string, unknown> | null = null;
+    try { json = JSON.parse(text) as Record<string, unknown>; } catch { /* ignore */ }
+    if (!r.ok) {
+      const errStr = (json?.error as string | undefined) ?? text.slice(0, 300) ?? `http_${r.status}`;
+      throw new Error(`${fn}: HTTP ${r.status} — ${errStr}`);
+    }
+    if (json && json.ok === false) {
+      throw new Error(`${fn}: ${(json.error as string | undefined) ?? 'ok=false'}`);
+    }
+    return json ?? {};
+  }
+
   async function runRevision(
     userPrompt: string,
     feedback: CompareFeedback | null,
@@ -243,53 +272,43 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
     const sid = activeSandboxId.current;
     if (!isAutoRepair) setReviseBusy(true);
     setReviseStatus(isAutoRepair ? 'AI verfijnt je ontwerp…' : 'AI past je ontwerp aan…');
+    setReviseRawError(null);
 
     try {
       // 1. generate met previous_package
-      const genR = await fetch(`${SUPABASE_URL}/functions/v1/generate-studio4-component`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          reference_path: referencePath,
-          chat_prompt: userPrompt,
-          fixture_hint: '',
-          previous_package: currentPackage,
-          previous_feedback: feedback ?? undefined,
-        }),
-      }).then((r) => r.json());
-      if (!genR.ok || !genR.final_package) throw new Error(genR.error ?? 'generate_failed');
-      const newPkg = genR.final_package as PkgFiles;
-      setCurrentPackage(newPkg);
+      const genR = await postEdge('generate-studio4-component', {
+        reference_path: referencePath,
+        chat_prompt: userPrompt,
+        fixture_hint: '',
+        previous_package: currentPackage,
+        previous_feedback: feedback ?? undefined,
+      });
+      const finalPkg = genR.final_package as PkgFiles | undefined;
+      if (!finalPkg) throw new Error('generate: geen final_package in respons');
+      setCurrentPackage(finalPkg);
 
       // 2. rebuild in bestaande sandbox
       setReviseStatus('Aanpassing bouwen…');
-      const build = await fetch(`${SUPABASE_URL}/functions/v1/sandbox-build-trigger`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          phase: 'build_from_ai',
-          sandbox_id: sid,
-          manifest: newPkg.manifest,
-          component_tsx: newPkg.componentTsx,
-          preview_shell_version: PREVIEW_SHELL_VERSION,
-          fixture_path: null,
-        }),
-      }).then((r) => r.json());
-      if (!build.ok) throw new Error(build.error ?? 'build_failed');
+      await postEdge('sandbox-build-trigger', {
+        phase: 'build_from_ai',
+        sandbox_id: sid,
+        manifest: finalPkg.manifest,
+        component_tsx: finalPkg.componentTsx,
+        preview_shell_version: PREVIEW_SHELL_VERSION,
+        fixture_path: null,
+      });
 
       // 3. expose (python server draait al; getHost is idempotent) + iframe reload
-      const exp = await fetch(`${SUPABASE_URL}/functions/v1/sandbox-build-trigger`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phase: 'expose', sandbox_id: sid }),
-      }).then((r) => r.json());
-      if (exp.ok && exp.expose_url) {
-        setExposeUrl(exp.expose_url as string);
-      }
+      const exp = await postEdge('sandbox-build-trigger', { phase: 'expose', sandbox_id: sid });
+      if (exp.expose_url) setExposeUrl(exp.expose_url as string);
       setIframeKey((k) => k + 1);
       setReviseStatus('');
     } catch (e) {
-      setReviseStatus(`Kon aanpassing niet uitvoeren: ${friendlyError((e as Error).message)}`);
+      const raw = (e as Error).message;
+      // eslint-disable-next-line no-console
+      console.error('[Design4 revise] raw error:', raw);
+      setReviseRawError(raw);
+      setReviseStatus(`Kon aanpassing niet uitvoeren: ${friendlyError(raw)}`);
     } finally {
       if (!isAutoRepair) setReviseBusy(false);
     }
@@ -392,9 +411,17 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
           </div>
         </div>
         {(autoRepairBusy || reviseBusy || reviseStatus) && (
-          <div className="border-b border-gray-800 bg-gray-900 px-6 py-2 flex items-center gap-2 text-xs text-gray-300">
-            {(autoRepairBusy || reviseBusy) && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-            <span>{reviseStatus || 'AI verfijnt je ontwerp…'}</span>
+          <div className="border-b border-gray-800 bg-gray-900 px-6 py-2 space-y-1 text-xs text-gray-300">
+            <div className="flex items-center gap-2">
+              {(autoRepairBusy || reviseBusy) && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              <span>{reviseStatus || 'AI verfijnt je ontwerp…'}</span>
+            </div>
+            {reviseRawError && (
+              <details className="text-[10px] text-gray-500">
+                <summary className="cursor-pointer">Technische details</summary>
+                <div className="mt-1 font-mono break-all whitespace-pre-wrap">{reviseRawError}</div>
+              </details>
+            )}
           </div>
         )}
         <div className="flex-1 flex items-start justify-center py-6 px-6 overflow-auto">
