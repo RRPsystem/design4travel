@@ -275,8 +275,27 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
     feedback: CompareFeedback | null,
     isAutoRepair: boolean,
   ) {
-    if (!currentPackage || !referencePath || !activeSandboxId.current) return;
+    // Guard: als state weggevallen is (bijv. sandbox eerder gedestroyed of
+    // page-refresh in de tussentijd), moeten we NIET silent returnen — user
+    // zag dan een klik zonder enige feedback. Toon in plaats daarvan een
+    // heldere status zodat 'ie weet dat 'ie op 'Opnieuw proberen' moet.
+    if (!currentPackage || !referencePath || !activeSandboxId.current) {
+      const missing = [
+        !currentPackage && 'pakket',
+        !referencePath && 'referentie',
+        !activeSandboxId.current && 'sandbox',
+      ].filter(Boolean).join(', ');
+      // eslint-disable-next-line no-console
+      console.warn('[Design4 revise] guard tripped, missing:', missing);
+      if (!isAutoRepair) {
+        setReviseRawError(`guard: missing ${missing}`);
+        setReviseStatus('De voorbeeldomgeving is verlopen. Klik "Opnieuw proberen" om verder te gaan.');
+      }
+      return;
+    }
     const sid = activeSandboxId.current;
+    // eslint-disable-next-line no-console
+    console.log('[Design4 revise] start', { isAutoRepair, sid, userPrompt });
     if (!isAutoRepair) setReviseBusy(true);
     setReviseStatus(isAutoRepair ? 'AI verfijnt je ontwerp…' : 'AI past je ontwerp aan…');
     setReviseRawError(null);
@@ -326,6 +345,8 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
   async function sendChat() {
     const text = chatInput.trim();
     if (!text || reviseBusy) return;
+    // eslint-disable-next-line no-console
+    console.log('[Design4 sendChat]', text);
     setChatInput('');
     await runRevision(text, null, false);
   }
@@ -499,7 +520,7 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
             <iframe
               key={iframeKey}
               title="Je ontwerp"
-              src={exposeUrl}
+              src={`${exposeUrl}${exposeUrl.includes('?') ? '&' : '?'}_r=${iframeKey}`}
               className="block border-0"
               style={{ width: `${vp.width}px`, height: viewport === 'mobile' ? '844px' : '900px' }}
             />
