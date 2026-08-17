@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Upload, Sparkles, Loader2, Monitor, Smartphone, RotateCcw, Send } from 'lucide-react';
+import { Upload, Sparkles, Loader2, Monitor, Smartphone, RotateCcw, Send, Check, Bookmark } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 
 /**
@@ -78,6 +78,13 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
   const [reviseStatus, setReviseStatus] = useState<string>('');
   const [reviseRawError, setReviseRawError] = useState<string | null>(null);
   const [autoRepairBusy, setAutoRepairBusy] = useState(false);
+
+  // Save-as-template
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [saveName, setSaveName] = useState('');
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [saveDone, setSaveDone] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Destroy sandbox bij tab-sluiten. Gebruik fetch met keepalive zodat de call
   // ook bij page-unload doorgaat (i.p.v. sendBeacon die geen Authorization
@@ -273,6 +280,8 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
     if (!isAutoRepair) setReviseBusy(true);
     setReviseStatus(isAutoRepair ? 'AI verfijnt je ontwerp…' : 'AI past je ontwerp aan…');
     setReviseRawError(null);
+    // Nieuwe versie → oude 'opgeslagen'-badge is niet meer geldig
+    setSaveDone(false);
 
     try {
       // 1. generate met previous_package
@@ -321,6 +330,60 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
     await runRevision(text, null, false);
   }
 
+  /**
+   * Slaat huidig pakket op als template. Insert gaat direct via supabase-js
+   * met user-JWT; RLS in migratie 0021 zorgt dat owner_user_id niet spoofbaar
+   * is. Slug wordt afgeleid van naam (lowercase, spaties → '-', overige
+   * chars gestript). Bij naamconflict binnen owner: friendly error.
+   */
+  async function saveTemplate() {
+    if (!currentPackage) return;
+    const name = saveName.trim();
+    if (name.length < 1 || name.length > 120) {
+      setSaveError('Geef je ontwerp een naam (1-120 tekens).');
+      return;
+    }
+    const slug = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80);
+    if (!slug) {
+      setSaveError('Deze naam kan niet gebruikt worden. Probeer een andere.');
+      return;
+    }
+
+    setSaveBusy(true);
+    setSaveError(null);
+    try {
+      const { data: userData } = await supabase.auth.getUser();
+      const uid = userData.user?.id;
+      if (!uid) throw new Error('Je sessie is verlopen. Log opnieuw in.');
+
+      const { error } = await supabase.from('design_templates').insert({
+        owner_user_id: uid,
+        name,
+        slug,
+        manifest: currentPackage.manifest,
+        component_tsx: currentPackage.componentTsx,
+        reference_path: referencePath,
+      });
+      if (error) {
+        if (error.code === '23505') {
+          throw new Error('Je hebt al een template met deze naam. Kies een andere naam.');
+        }
+        throw new Error(error.message);
+      }
+      setSaveDone(true);
+      setSaveOpen(false);
+      setSaveName('');
+    } catch (e) {
+      setSaveError((e as Error).message);
+    } finally {
+      setSaveBusy(false);
+    }
+  }
+
   function reset() {
     destroyIfActive();
     setFile(null);
@@ -333,6 +396,10 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
     setCaptureJobId(null);
     setChatInput('');
     setReviseStatus('');
+    setSaveOpen(false);
+    setSaveName('');
+    setSaveDone(false);
+    setSaveError(null);
     autoRepairedRef.current = false;
     setPhase('idle');
   }
@@ -463,23 +530,69 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
             </button>
           </div>
         </div>
-        <div className="border-t border-gray-800 px-6 py-3 flex items-center justify-end gap-2 text-xs">
-          <button
-            type="button"
-            disabled
-            className="rounded bg-gray-800 text-gray-500 px-3 py-1.5 cursor-not-allowed"
-            title="Binnenkort beschikbaar"
-          >
-            Opslaan als template
-          </button>
-          <button
-            type="button"
-            disabled
-            className="rounded bg-gray-800 text-gray-500 px-3 py-1.5 cursor-not-allowed"
-            title="Binnenkort beschikbaar"
-          >
-            Gebruiken in Studio4
-          </button>
+        <div className="border-t border-gray-800 px-6 py-3 flex flex-col gap-2 text-xs">
+          {saveOpen && (
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={saveName}
+                onChange={(e) => setSaveName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveTemplate(); }
+                  if (e.key === 'Escape') { setSaveOpen(false); setSaveError(null); }
+                }}
+                placeholder='Naam, bv. "Safari hero warm"'
+                disabled={saveBusy}
+                autoFocus
+                className="flex-1 rounded bg-gray-900 border border-gray-800 px-3 py-1.5 text-xs text-gray-100 focus:border-white/60 focus:outline-none disabled:opacity-50"
+              />
+              <button
+                type="button"
+                onClick={saveTemplate}
+                disabled={saveBusy || !saveName.trim()}
+                className="inline-flex items-center gap-1.5 rounded bg-white text-gray-900 px-3 py-1.5 font-semibold disabled:opacity-50"
+              >
+                {saveBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Bookmark className="h-3.5 w-3.5" />}
+                Bewaren
+              </button>
+              <button
+                type="button"
+                onClick={() => { setSaveOpen(false); setSaveError(null); }}
+                disabled={saveBusy}
+                className="rounded bg-gray-800 hover:bg-gray-700 text-gray-100 px-3 py-1.5 disabled:opacity-50"
+              >
+                Annuleren
+              </button>
+            </div>
+          )}
+          {saveError && (
+            <div className="text-red-400">{saveError}</div>
+          )}
+          <div className="flex items-center justify-end gap-2">
+            {saveDone && (
+              <span className="inline-flex items-center gap-1 text-emerald-400">
+                <Check className="h-3.5 w-3.5" />
+                Opgeslagen
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => { setSaveOpen((v) => !v); setSaveError(null); }}
+              disabled={!currentPackage || reviseBusy || autoRepairBusy}
+              className="inline-flex items-center gap-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-100 px-3 py-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Bookmark className="h-3.5 w-3.5" />
+              {saveOpen ? 'Sluiten' : 'Opslaan als template'}
+            </button>
+            <button
+              type="button"
+              disabled
+              className="rounded bg-gray-800 text-gray-500 px-3 py-1.5 cursor-not-allowed"
+              title="Binnenkort beschikbaar"
+            >
+              Gebruiken in Studio4
+            </button>
+          </div>
         </div>
       </div>
     );
