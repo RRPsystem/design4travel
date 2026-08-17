@@ -587,26 +587,62 @@ async function handleExpose(apiKey: string, sandboxId: string) {
       'start_static_server_nocache',
       `bash -c '
 set -e
-# Kill een eventueel eerder gestart python-http.server proces op :8080
-pkill -f "http.server 8080" 2>/dev/null || true
+# Pre-flight: python-script aanwezig?
+if [ ! -f /tmp/http-nocache.py ]; then
+  echo "[expose] FATAL /tmp/http-nocache.py ontbreekt"
+  exit 1
+fi
+# Pre-flight: dist bestaat?
+if [ ! -d /home/user/build/dist ]; then
+  echo "[expose] FATAL /home/user/build/dist ontbreekt"
+  ls -la /home/user/build 2>/dev/null || true
+  exit 1
+fi
+# Kill eventuele oude servers op :8080 (fresh sandbox → geen match, dus || true)
+pkill -f "http.server" 2>/dev/null || true
 pkill -f "http-nocache.py" 2>/dev/null || true
-sleep 1
-nohup python3 /tmp/http-nocache.py > /tmp/server.log 2>&1 &
+sleep 2
+# Start de custom no-cache server. -u = unbuffered zodat logs direct wegvloeien.
+nohup python3 -u /tmp/http-nocache.py > /tmp/server.log 2>&1 &
+SPID=$!
 disown
-for i in $(seq 1 15); do
+echo "[expose] python-server PID=$SPID"
+sleep 1
+# Draait proces nog?
+if ! kill -0 $SPID 2>/dev/null; then
+  echo "[expose] server-proces crashte direct, server.log:"
+  cat /tmp/server.log 2>/dev/null || echo "(server.log leeg of afwezig)"
+  exit 1
+fi
+# Wacht tot port bereikbaar (max 20s)
+READY=0
+for i in $(seq 1 20); do
   if curl -sf -o /dev/null http://127.0.0.1:8080/; then
     echo "[expose] no-cache server ready after \${i}s"
+    READY=1
     break
   fi
   sleep 1
 done
-curl -sfI http://127.0.0.1:8080/ | grep -i "cache-control" || echo "[expose] no cache-control header seen (non-fatal)"
+if [ "$READY" != "1" ]; then
+  echo "[expose] server draait ($SPID) maar :8080 niet reachable na 20s, server.log:"
+  cat /tmp/server.log 2>/dev/null || true
+  exit 1
+fi
+# Diagnostic: cache-control header aanwezig? Non-fatal.
+curl -sfI http://127.0.0.1:8080/ | grep -i "cache-control" || echo "[expose] cache-control header niet gezien (non-fatal)"
 '`,
-      30_000,
+      45_000,
       logs,
       timings,
     );
-    if (!ok) throw new Error('step_failed:start_static_server');
+    if (!ok) {
+      const last = logs[logs.length - 1];
+      const detail = last
+        ? ` [exit=${last.exit_code}] stderr=${(last.stderr_tail || '').slice(-400)} stdout=${(last.stdout_tail || '').slice(-400)}`
+        : '';
+      throw new Error(`step_failed:start_static_server${detail}`);
+    }
 
     // E2B v2 SDK: getHost(port) geeft publieke URL. Fallback op oudere API-namen.
     const tHost = Date.now();
