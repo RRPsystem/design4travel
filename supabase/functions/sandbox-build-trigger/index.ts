@@ -561,29 +561,46 @@ async function handleExpose(apiKey: string, sandboxId: string) {
     sandbox = await Sandbox.connect(sandboxId);
     timings.sandbox_connect_ms = Date.now() - tConn;
 
-    // Start static HTTP server op :8080 en wacht tot poort luistert.
-    // `nohup` + `disown` zodat proces overleeft ná deze commands.run() shell exit.
-    // Als server al draait vanuit een eerdere expose, is dat prima (curl slaagt).
+    // Static server op :8080 met no-cache headers. Bij een revise draaide
+    // een eerder server-proces al, MAAR standaard `python3 -m http.server`
+    // stuurt geen Cache-Control-headers → Chrome cached iframe-content
+    // agressief → user ziet oude build ondanks succesvolle rebuild.
+    // Fix: bij elke expose kill de bestaande server (indien draaiend) en
+    // start een custom Python-handler die no-store headers meestuurt.
+    const noCachePy = [
+      'import http.server, socketserver, os',
+      'os.chdir("/home/user/build/dist")',
+      'class H(http.server.SimpleHTTPRequestHandler):',
+      '    def end_headers(self):',
+      '        self.send_header("Cache-Control","no-store, no-cache, must-revalidate, max-age=0")',
+      '        self.send_header("Pragma","no-cache")',
+      '        self.send_header("Expires","0")',
+      '        super().end_headers()',
+      'socketserver.TCPServer.allow_reuse_address = True',
+      'with socketserver.TCPServer(("0.0.0.0",8080), H) as httpd:',
+      '    httpd.serve_forever()',
+    ].join('\n');
+    await sandbox.files.write('/tmp/http-nocache.py', noCachePy);
+
     const ok = await runStep(
       sandbox,
-      'start_static_server',
+      'start_static_server_nocache',
       `bash -c '
 set -e
-if curl -sf -o /dev/null http://127.0.0.1:8080/; then
-  echo "[expose] server already running"
-else
-  cd /home/user/build/dist
-  nohup python3 -m http.server 8080 --bind 0.0.0.0 > /tmp/server.log 2>&1 &
-  disown
-  for i in $(seq 1 15); do
-    if curl -sf -o /dev/null http://127.0.0.1:8080/; then
-      echo "[expose] server ready after \${i}s"
-      break
-    fi
-    sleep 1
-  done
-fi
-curl -sf http://127.0.0.1:8080/ | head -1
+# Kill een eventueel eerder gestart python-http.server proces op :8080
+pkill -f "http.server 8080" 2>/dev/null || true
+pkill -f "http-nocache.py" 2>/dev/null || true
+sleep 1
+nohup python3 /tmp/http-nocache.py > /tmp/server.log 2>&1 &
+disown
+for i in $(seq 1 15); do
+  if curl -sf -o /dev/null http://127.0.0.1:8080/; then
+    echo "[expose] no-cache server ready after \${i}s"
+    break
+  fi
+  sleep 1
+done
+curl -sfI http://127.0.0.1:8080/ | grep -i "cache-control"
 '`,
       30_000,
       logs,
