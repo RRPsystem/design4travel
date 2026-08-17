@@ -701,10 +701,18 @@ async function handleBuildFromAi(
     sandbox = await Sandbox.connect(sandboxId);
     timings.sandbox_connect_ms = Date.now() - tConn;
 
-    // Schrijf AI-Component naar filesystem (via files.write; robuuster dan echo)
+    // Schrijf AI-Component naar filesystem via files.write. Gebruik unieke
+    // suffix per build zodat bij revise (tweede build in dezelfde sandbox)
+    // geen collision optreedt met /tmp/ai-component.tsx van vorige build
+    // (E2B SDK gaf: '500: error opening file: permission denied').
+    const uniq = crypto.randomUUID().slice(0, 8);
+    const tmpComponent = `/tmp/ai-component-${uniq}.tsx`;
+    const tmpManifest  = `/tmp/ai-manifest-${uniq}.json`;
+    const tmpApp       = `/tmp/ai-app-${uniq}.tsx`;
+
     const tWrite = Date.now();
-    await sandbox.files.write(`/tmp/ai-component.tsx`, componentTsx);
-    await sandbox.files.write(`/tmp/ai-manifest.json`, JSON.stringify(manifest, null, 2));
+    await sandbox.files.write(tmpComponent, componentTsx);
+    await sandbox.files.write(tmpManifest, JSON.stringify(manifest, null, 2));
     timings.write_ai_files_ms = Date.now() - tWrite;
 
     // App.tsx template — build up on Deno-side, write into sandbox
@@ -727,7 +735,7 @@ export default function App() {
   );
 }
 `;
-    await sandbox.files.write(`/tmp/ai-app.tsx`, appTsx);
+    await sandbox.files.write(tmpApp, appTsx);
 
     const steps: Array<{ label: string; cmd: string; timeoutMs: number }> = [
       {
@@ -745,9 +753,9 @@ export default function App() {
         cmd: `set -e
 mkdir -p /home/user/build/src/components/Site/sections
 rm -f /home/user/build/src/components/Site/sections/GeneratedComponent.tsx
-cp /tmp/ai-component.tsx /home/user/build/src/components/Site/sections/${fileName}
-cp /tmp/ai-manifest.json /home/user/build/src/components/Site/sections/manifest.json
-cp /tmp/ai-app.tsx /home/user/build/src/App.tsx
+cp ${tmpComponent} /home/user/build/src/components/Site/sections/${fileName}
+cp ${tmpManifest} /home/user/build/src/components/Site/sections/manifest.json
+cp ${tmpApp} /home/user/build/src/App.tsx
 ls /home/user/build/src/components/Site/sections/`,
         timeoutMs: 15_000,
       },
