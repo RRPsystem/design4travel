@@ -183,12 +183,16 @@ async function checkRateLimits(
   serviceKey: string,
   userId: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const nowIso = new Date().toISOString();
   const hourAgoIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  // E2B Hobby-sandboxes worden na 30 min timeout automatisch gekilld. Rijen
+  // ouder dan 30 min die nog op 'active' staan zijn stale (destroy-call miste)
+  // en tellen NIET mee voor de concurrent-limit. Anders blijft user vast op
+  // rate-limit terwijl er geen echte sandboxes meer draaien.
+  const thirtyMinAgoIso = new Date(Date.now() - 30 * 60 * 1000).toISOString();
 
-  // Aantal ACTIVE sandboxes van deze user
+  // Aantal ACTIVE sandboxes van deze user, alleen jonger dan 30 min
   const activeR = await fetch(
-    `${supabaseUrl}/rest/v1/sandbox_runs?select=id&user_id=eq.${userId}&status=eq.active`,
+    `${supabaseUrl}/rest/v1/sandbox_runs?select=id&user_id=eq.${userId}&status=eq.active&created_at=gte.${thirtyMinAgoIso}`,
     { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}`, Prefer: 'count=exact' } },
   );
   if (!activeR.ok) {
@@ -199,7 +203,7 @@ async function checkRateLimits(
     return { ok: false, error: `rate_limit_concurrent_reached_${activeCount}_${RATE_LIMIT_MAX_CONCURRENT}` };
   }
 
-  // Aantal runs in laatste uur
+  // Aantal runs in laatste uur (voor hourly-cap; hier telt WEL alles ongeacht status)
   const hourR = await fetch(
     `${supabaseUrl}/rest/v1/sandbox_runs?select=id&user_id=eq.${userId}&created_at=gte.${hourAgoIso}`,
     { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}`, Prefer: 'count=exact' } },
@@ -212,8 +216,6 @@ async function checkRateLimits(
     return { ok: false, error: `rate_limit_hourly_reached_${hourCount}_${RATE_LIMIT_MAX_PER_HOUR}` };
   }
 
-  // Anti-warning: `nowIso` niet direct gebruikt — voor toekomst (daily-cap).
-  void nowIso;
   return { ok: true };
 }
 

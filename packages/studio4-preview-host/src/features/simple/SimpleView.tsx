@@ -37,7 +37,7 @@ const VIEWPORTS: Record<Viewport, { label: string; width: number; icon: typeof M
 function friendlyError(rawError: string | null | undefined): string {
   if (!rawError) return 'Er ging iets mis. Probeer het opnieuw.';
   const r = rawError.toLowerCase();
-  if (r.includes('rate_limit_concurrent')) return 'Je hebt momenteel al meerdere ontwerpen tegelijk lopen. Wacht tot een ervan klaar is.';
+  if (r.includes('rate_limit_concurrent')) return 'Er lopen momenteel te veel ontwerpen tegelijk. Wacht een paar minuten en probeer opnieuw — oude sessies worden automatisch opgeruimd.';
   if (r.includes('rate_limit_hourly')) return 'Je hebt vandaag al veel ontwerpen gemaakt. Probeer het over een uur opnieuw.';
   if (r.includes('missing_bearer_token') || r.includes('auth_verify') || r.includes('sessie is verlopen')) return 'Je sessie is verlopen. Log opnieuw in.';
   if (r.includes('reference_path_required')) return 'Er ging iets mis met de afbeelding. Kies een ander bestand en probeer opnieuw.';
