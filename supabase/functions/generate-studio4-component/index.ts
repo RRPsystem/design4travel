@@ -84,6 +84,83 @@ async function signedDownloadUrl(
 }
 
 // -----------------------------------------------------------------------------
+// Image-token resolver
+// -----------------------------------------------------------------------------
+
+const IMAGE_TOKEN_REGEX = /\{\{image:([^|}]+)\|([^}]+)\}\}/g;
+
+interface TokenResolveResult {
+  componentTsx: string;
+  tokensFound: number;
+  tokensResolved: number;
+  sources: Record<string, number>; // 'unsplash'|'pexels'|'picsum' → count
+  errors: string[];
+}
+
+/**
+ * Vervang `{{image:role|query}}`-tokens door concrete image-URLs via de
+ * media-search Edge Function (Unsplash → Pexels → picsum-fallback).
+ * Dedup op query zodat we niet 5x dezelfde search doen voor dezelfde term.
+ * Fail-soft: als een token niet resolveerbaar is, blijft de token in de src
+ * staan (broken image is beter dan complete generation-fail).
+ */
+async function resolveImageTokens(
+  componentTsx: string,
+  supabaseUrl: string,
+  serviceKey: string,
+): Promise<TokenResolveResult> {
+  const matches = [...componentTsx.matchAll(IMAGE_TOKEN_REGEX)];
+  const uniqueQueries = new Set<string>();
+  for (const m of matches) uniqueQueries.add(m[2]!.trim());
+
+  const urlByQuery = new Map<string, string>();
+  const sources: Record<string, number> = {};
+  const errors: string[] = [];
+
+  await Promise.all(
+    [...uniqueQueries].map(async (q) => {
+      try {
+        const r = await fetch(`${supabaseUrl}/functions/v1/media-search`, {
+          method: 'POST',
+          headers: {
+            apikey: serviceKey,
+            Authorization: `Bearer ${serviceKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ query: q, orientation: 'landscape' }),
+        });
+        const j = (await r.json()) as { ok?: boolean; url?: string; source?: string; error?: string };
+        if (!r.ok || !j.ok || !j.url) {
+          errors.push(`"${q}": ${j.error ?? `http_${r.status}`}`);
+          return;
+        }
+        urlByQuery.set(q, j.url);
+        const src = j.source ?? 'unknown';
+        sources[src] = (sources[src] ?? 0) + 1;
+      } catch (e) {
+        errors.push(`"${q}": ${(e as Error).message}`);
+      }
+    }),
+  );
+
+  let resolved = 0;
+  const out = componentTsx.replace(IMAGE_TOKEN_REGEX, (full, _role: string, query: string) => {
+    const url = urlByQuery.get(query.trim());
+    if (!url) return full; // token blijft staan
+    resolved++;
+    return url;
+  });
+
+  return {
+    componentTsx: out,
+    tokensFound: matches.length,
+    tokensResolved: resolved,
+    sources,
+    errors,
+  };
+}
+
+// -----------------------------------------------------------------------------
 // Metrics logging (fail-open)
 // -----------------------------------------------------------------------------
 
@@ -277,6 +354,31 @@ Deno.serve(async (req: Request) => {
     error = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
   }
 
+  // Na succesvolle validatie: vervang {{image:role|query}}-tokens door
+  // echte URLs via media-search (Unsplash → Pexels → picsum-fallback).
+  // Fail-soft: bij media-search-fouten blijven tokens staan, generation
+  // wordt niet gefaald.
+  let tokenResolve: TokenResolveResult | null = null;
+  if (!error && finalValidation?.ok && finalPackage) {
+    try {
+      tokenResolve = await resolveImageTokens(
+        finalPackage.componentTsx,
+        supabaseUrl,
+        serviceKey,
+      );
+      finalPackage = { ...finalPackage, componentTsx: tokenResolve.componentTsx };
+    } catch (e) {
+      // Log maar niet fatal
+      tokenResolve = {
+        componentTsx: finalPackage.componentTsx,
+        tokensFound: 0,
+        tokensResolved: 0,
+        sources: {},
+        errors: [`resolver_error: ${(e as Error).message}`],
+      };
+    }
+  }
+
   return new Response(
     JSON.stringify({
       ok: !error && Boolean(finalValidation?.ok),
@@ -288,6 +390,7 @@ Deno.serve(async (req: Request) => {
       generation_log: generationLog,
       final_package: finalPackage,
       final_validation: finalValidation,
+      image_tokens: tokenResolve,
     }, null, 2),
     { headers: { ...CORS, 'Content-Type': 'application/json' } },
   );

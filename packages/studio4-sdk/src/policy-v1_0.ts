@@ -69,14 +69,18 @@ export const POLICY_V1_0: SdkPolicy = {
    * Image-domeinen die TravelBridgeAI's Netlify-image-CDN accepteert. Bron:
    * `netlify.toml` [images].remote_images. Elke `<img src="...">` of
    * `imgHeroResponsive("...")`-URL moet hierbinnen vallen; anders reject.
+   *
+   * NB: images.unsplash.com + images.pexels.com zijn hier bewust NIET
+   * whitelisted. AI moet stock-photos via {{image:role|query}}-tokens
+   * aanvragen; Design4-backend (media-search Edge Function) vervangt die
+   * tokens na validatie door bestaande URLs uit die domeinen. Zonder deze
+   * indirection genereert AI vaak niet-bestaande photo-IDs → 404's.
    */
   allowedImageDomains: [
     'supabase.co',
     'tr2storage.blob.core.windows.net',
     'online.travelcompositor.com',
     'res.cloudinary.com',
-    'images.unsplash.com',
-    'images.pexels.com',
     'static.travelconline.com',
     'i.travelapi.com',
   ] as const,

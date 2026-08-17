@@ -8,9 +8,9 @@ import type { SectionProps } from './types';
  *
  * Gelaagde safari-hero: full-bleed background, transparante nav via SiteLayout,
  * grote titel links-onderaan, CTA + scroll-hint. Voldoet aan POLICY_V1_0:
- * uitsluitend whitelisted imports, geen verboden runtime-globals, alle images
- * via imgHeroResponsive() met domain-checked URLs (unsplash), named export met
- * filename-match, SectionProps-signature.
+ * uitsluitend whitelisted imports, geen verboden runtime-globals, images via
+ * {{image:role|query}}-tokens (Design4-backend vervangt na validatie), named
+ * export met filename-match, SectionProps-signature.
  */
 
 interface HeroContent {
@@ -21,8 +21,10 @@ interface HeroContent {
   backgroundText?: string;
 }
 
-const DEFAULT_HERO_IMAGE =
-  'https://images.unsplash.com/photo-1516426122078-c23e76319801';
+// {{image:...}}-token: Design4-backend media-search vervangt dit na validatie
+// door een echte Unsplash/Pexels-URL. Voorkomt broken images door AI-gegokte
+// photo-IDs die niet bestaan.
+const DEFAULT_HERO_IMAGE = '{{image:hero-bg|safari sunset kruger elephants}}';
 
 export function SafariHeroSection({ brand, primaryColor, pageContent }: SectionProps) {
   const hero = (pageContent['hero'] as HeroContent | undefined) ?? {};

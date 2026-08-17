@@ -60,7 +60,7 @@ import { imgHeroResponsive } from '../../../lib/imageUtils';
 import type { SectionProps } from './types';
 
 export function HeroSafariSection({ brand, primaryColor, pageContent }: SectionProps) {
-  const bg = imgHeroResponsive('https://images.pexels.com/photos/1/pic.jpg');
+  const bg = imgHeroResponsive('https://foo.supabase.co/storage/v1/object/public/x.jpg');
   return (
     <section className="relative min-h-screen" style={{ backgroundColor: primaryColor }}>
       <img src={bg.src} srcSet={bg.srcSet} sizes={bg.sizes} alt="" />
@@ -209,31 +209,47 @@ eval('doStuff()');
 // -----------------------------------------------------------------------------
 
 describe('validatePackage - image domain whitelist', () => {
-  it('accepteert URLs op whitelisted domeinen (pexels, unsplash)', () => {
+  it('accepteert URLs op whitelisted domeinen (cloudinary)', () => {
     const tsx = VALID_TSX.replace(
-      'images.pexels.com/photos/1/pic.jpg',
-      'images.unsplash.com/photo-123.jpg',
+      'foo.supabase.co/storage/v1/object/public/x.jpg',
+      'res.cloudinary.com/demo/image/upload/sample.jpg',
     );
     const r = validatePackage(makeFiles({ componentTsx: tsx }));
     expect(r.ok).toBe(true);
   });
 
   it('accepteert subdomeinen van whitelisted hosts', () => {
-    const tsx = VALID_TSX.replace(
-      'images.pexels.com/photos/1/pic.jpg',
-      'foo.supabase.co/storage/v1/object/public/x.jpg',
-    );
-    const r = validatePackage(makeFiles({ componentTsx: tsx }));
+    // VALID_TSX gebruikt al foo.supabase.co (subdomein van supabase.co)
+    const r = validatePackage(makeFiles());
     expect(r.ok).toBe(true);
   });
 
   it('wijst URLs op niet-whitelisted domeinen af', () => {
     const tsx = VALID_TSX.replace(
-      'images.pexels.com/photos/1/pic.jpg',
+      'foo.supabase.co/storage/v1/object/public/x.jpg',
       'evil.example.com/tracker.gif',
     );
     const r = validatePackage(makeFiles({ componentTsx: tsx }));
     expect(r.ok).toBe(false);
     expect(r.issues.some((i) => i.rule === 'policy.image-domain-not-allowed')).toBe(true);
+  });
+
+  it('wijst images.unsplash.com af — AI moet {{image:role|query}}-tokens gebruiken', () => {
+    const tsx = VALID_TSX.replace(
+      'foo.supabase.co/storage/v1/object/public/x.jpg',
+      'images.unsplash.com/photo-1516426122078-c23e76319801',
+    );
+    const r = validatePackage(makeFiles({ componentTsx: tsx }));
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.rule === 'policy.image-domain-not-allowed')).toBe(true);
+  });
+
+  it('accepteert {{image:role|query}}-tokens (backend substitueert na validatie)', () => {
+    const tsx = VALID_TSX.replace(
+      "imgHeroResponsive('https://foo.supabase.co/storage/v1/object/public/x.jpg')",
+      "imgHeroResponsive('{{image:hero-bg|safari sunset kruger}}')",
+    );
+    const r = validatePackage(makeFiles({ componentTsx: tsx }));
+    expect(r.ok).toBe(true);
   });
 });

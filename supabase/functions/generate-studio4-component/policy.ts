@@ -31,13 +31,16 @@ export const POLICY_V1_0: SdkPolicy = {
     'eval', 'Function',
   ],
   requiresSsrGuard: ['window', 'document', 'navigator', 'location'],
+  // NB: images.unsplash.com en images.pexels.com zijn bewust NIET whitelisted.
+  // AI moet {{image:role|query}}-tokens gebruiken; Design4-backend vervangt die
+  // na validatie door echte URLs via de media-search Edge Function. Als AI toch
+  // een concrete unsplash/pexels-URL verzint (vaak een niet-bestaand photo-ID
+  // → 404), pikt de validator dat op en dwingt de repair-loop naar tokens.
   allowedImageDomains: [
     'supabase.co',
     'tr2storage.blob.core.windows.net',
     'online.travelcompositor.com',
     'res.cloudinary.com',
-    'images.unsplash.com',
-    'images.pexels.com',
     'static.travelconline.com',
     'i.travelapi.com',
   ],

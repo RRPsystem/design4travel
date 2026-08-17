@@ -84,12 +84,31 @@ Elke andere import → validator-error. Geen new packages, geen absolute paths.
 fetch, XMLHttpRequest, WebSocket, EventSource, localStorage, sessionStorage, indexedDB, eval, Function.
 **Vermijd ook mentions in doc-comments** — de validator scant naïef en pikt "fetch" in een comment als error.
 
-## Image-URLs
+## Image-URLs — VERPLICHT via tokens, NOOIT concrete URLs
 
-Alleen deze domeinen zijn toegestaan (POLICY_V1_0.allowedImageDomains):
-supabase.co, tr2storage.blob.core.windows.net, online.travelcompositor.com, res.cloudinary.com, images.unsplash.com, images.pexels.com, static.travelconline.com, i.travelapi.com.
+**Elke** \`<img src>\` en elke background-image MOET een **image-token** zijn in exact dit format:
 
-Voor safari/reis-content: gebruik images.unsplash.com URLs met beschrijvende photo-IDs waar mogelijk.
+\`\`\`
+{{image:<role>|<search-query>}}
+\`\`\`
+
+- \`role\`: korte identifier voor deze afbeelding binnen de component (\`hero-bg\`, \`card-1\`, \`gallery-2\`, etc.). Uniek maken zodat elke image z'n eigen slot heeft.
+- \`search-query\`: 2-6 Engelse (of Nederlandse) zoekwoorden die de gewenste foto beschrijven, thema-specifiek. Bijv. \`safari sunset kruger\`, \`beach mauritius palm trees\`, \`elephant africa savanna\`.
+
+Voorbeelden:
+\`\`\`tsx
+<img src="{{image:hero-bg|safari kruger sunset elephants}}" alt="Safari zonsondergang" />
+<div style={{ backgroundImage: \`url({{image:card-1|lion pride savanna}})\` }} />
+<img src="{{image:gallery-2|beach mauritius palm}}" alt="Strand Mauritius" />
+\`\`\`
+
+**Waarom tokens en NIET concrete URLs**: de Design4-backend zoekt via Unsplash + Pexels API's naar de best passende **bestaande** foto en vervangt de token door de echte URL voordat het component in de sandbox draait. Als je zelf een \`images.unsplash.com/photo-XYZ\` verzint bestaat die vrijwel zeker niet → 404 → gebroken preview. Gebruik ALTIJD tokens.
+
+**Regels**:
+- Elke image-src is een token. Ook backgrounds via inline-style.
+- Kies zoekwoorden die matchen met de reiscontext van de fixture / user prompt.
+- Beschrijf elk beeld met een unieke \`role\` — geen dubbele roles binnen 1 component.
+- **Geen** \`https://...\` in src. **Geen** kale \`/foo.jpg\`. **Geen** \`<img alt="..."/>\` zonder src.
 
 ## Component-signature
 
@@ -117,7 +136,7 @@ export function <ComponentName>({ brand, primaryColor, pageContent }: SectionPro
 ## Kwaliteitseisen
 
 - **Nederlands als standaardtaal**: alle zichtbare content (titels, subtitles, CTA-labels, feature-tekst, tagline-chips) MOET in het Nederlands zijn, ook als de reference Engelstalig is. Alleen als de gebruiker expliciet om een andere taal vraagt: die taal.
-- **Echte image-URLs — nooit alt-only of relatieve paden**: elke \`<img>\` MOET een volledig \`https://...\`-URL hebben uit \`images.unsplash.com\` (bijv. \`https://images.unsplash.com/photo-1516426122078-c23e76319801\`), \`images.pexels.com\`, of \`tr2storage.blob.core.windows.net\`. Gebruik betekenisvolle Unsplash photo-IDs die passen bij het onderwerp (safari, natuur, reis). NOOIT \`/foo.jpg\`, \`./bar.png\`, of \`<img alt="..." />\` zonder src.
+- **Images altijd via {{image:role|query}}-tokens** (zie hierboven): NOOIT zelf \`https://images.unsplash.com/photo-XYZ\` verzinnen — die IDs bestaan niet en geven 404. Backend vervangt tokens door echte URLs.
 - **Full-bleed visuals**: hero's mogen \`min-h-screen\` en absolute layering gebruiken.
 - **Responsive**: gebruik Tailwind breakpoints (\`sm md lg xl 2xl\`).
 - **Brand-aware**: primaryColor via inline \`style={{ backgroundColor: primaryColor }}\`.
