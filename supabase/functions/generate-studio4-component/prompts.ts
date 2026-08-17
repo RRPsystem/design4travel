@@ -95,7 +95,7 @@ fetch, XMLHttpRequest, WebSocket, EventSource, localStorage, sessionStorage, ind
 - \`role\`: korte identifier voor deze afbeelding binnen de component (\`hero-bg\`, \`card-1\`, \`gallery-2\`, etc.). Uniek maken zodat elke image z'n eigen slot heeft.
 - \`search-query\`: 2-6 Engelse (of Nederlandse) zoekwoorden die de gewenste foto beschrijven, thema-specifiek. Bijv. \`safari sunset kruger\`, \`beach mauritius palm trees\`, \`elephant africa savanna\`.
 
-Voorbeelden:
+Voorbeelden (LET OP: token direct in string-attribuut, GEEN JavaScript-expressie):
 \`\`\`tsx
 <img src="{{image:hero-bg|safari kruger sunset elephants}}" alt="Safari zonsondergang" />
 <div style={{ backgroundImage: \`url({{image:card-1|lion pride savanna}})\` }} />
@@ -105,10 +105,12 @@ Voorbeelden:
 **Waarom tokens en NIET concrete URLs**: de Design4-backend zoekt via Unsplash + Pexels API's naar de best passende **bestaande** foto en vervangt de token door de echte URL voordat het component in de sandbox draait. Als je zelf een \`images.unsplash.com/photo-XYZ\` verzint bestaat die vrijwel zeker niet → 404 → gebroken preview. Gebruik ALTIJD tokens.
 
 **Regels**:
-- Elke image-src is een token. Ook backgrounds via inline-style.
+- Elke image-src is een token, DIRECT als string-value: \`src="{{image:role|query}}"\`. NOOIT \`src={"{{image:...}}"}\` of \`src={var}\` waar var een helper-object is.
+- Backgrounds: \`style={{ backgroundImage: \\\`url({{image:role|query}})\\\` }}\`.
 - Kies zoekwoorden die matchen met de reiscontext van de fixture / user prompt.
 - Beschrijf elk beeld met een unieke \`role\` — geen dubbele roles binnen 1 component.
 - **Geen** \`https://...\` in src. **Geen** kale \`/foo.jpg\`. **Geen** \`<img alt="..."/>\` zonder src.
+- **Geen** \`imgHeroResponsive()\`/\`imgCardResponsive()\`-wrapping — die helpers geven een OBJECT terug, niet een string, en resulteren in \`src="[object Object]"\`.
 
 ## Component-signature
 
@@ -131,7 +133,7 @@ export function <ComponentName>({ brand, primaryColor, pageContent }: SectionPro
 - Geen \`<nav>\` renderen — dat komt van SiteLayout in TravelBridgeAI.
 - Geen \`fetch\` of data-calls — alle data komt via \`props.pageContent\` en \`props.brand\`.
 - Geen \`window.*\` / \`document.*\` zonder \`typeof window !== 'undefined'\` guard.
-- Geen kale \`<img src="..."/>\` — altijd via \`imgHeroResponsive\`/\`imgCardResponsive\` helpers.
+- **Gebruik GEEN \`imgHeroResponsive\`/\`imgCardResponsive\`-helpers** in Component.tsx. Zet het image-token DIRECT in \`src\` of \`backgroundImage\`. Voorbeeld goed: \`<img src="{{image:hero|safari}}" alt="Safari" />\`. Voorbeeld FOUT: \`const bg = imgHeroResponsive("{{image:hero|safari}}"); <img src={bg} />\` — dat renderd \`[object Object]\` omdat de helper een object teruggeeft.
 
 ## Kwaliteitseisen
 
