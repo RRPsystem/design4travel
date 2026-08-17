@@ -600,7 +600,7 @@ for i in $(seq 1 15); do
   fi
   sleep 1
 done
-curl -sfI http://127.0.0.1:8080/ | grep -i "cache-control"
+curl -sfI http://127.0.0.1:8080/ | grep -i "cache-control" || echo "[expose] no cache-control header seen (non-fatal)"
 '`,
       30_000,
       logs,

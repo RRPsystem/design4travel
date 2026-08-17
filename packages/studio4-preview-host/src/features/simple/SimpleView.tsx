@@ -63,6 +63,7 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
   const [prompt, setPrompt] = useState('');
   const [statusText, setStatusText] = useState('');
   const [errorText, setErrorText] = useState<string | null>(null);
+  const [errorRaw, setErrorRaw] = useState<string | null>(null);
   const [exposeUrl, setExposeUrl] = useState<string | null>(null);
   const [iframeKey, setIframeKey] = useState(0); // force iframe reload bij revise
   const [viewport, setViewport] = useState<Viewport>('desktop');
@@ -126,6 +127,7 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
     if (activeSandboxId.current) await destroyIfActive();
     setExposeUrl(null);
     setErrorText(null);
+    setErrorRaw(null);
     setCurrentPackage(null);
     setReferencePath(null);
     setCaptureJobId(null);
@@ -201,7 +203,11 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
       setStatusText('');
       setPhase('previewing');
     } catch (e) {
-      setErrorText(friendlyError((e as Error).message));
+      const raw = (e as Error).message;
+      // eslint-disable-next-line no-console
+      console.error('[Design4 createDesign] raw error:', raw);
+      setErrorRaw(raw);
+      setErrorText(friendlyError(raw));
       setPhase('error');
       await destroyIfActive();
     }
@@ -433,6 +439,7 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
     setPrompt('');
     setExposeUrl(null);
     setErrorText(null);
+    setErrorRaw(null);
     setStatusText('');
     setCurrentPackage(null);
     setReferencePath(null);
@@ -479,6 +486,14 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
             <RotateCcw className="h-4 w-4" />
             Opnieuw proberen
           </button>
+          {errorRaw && (
+            <details className="text-left text-[11px] text-gray-500 mt-4">
+              <summary className="cursor-pointer">Technische details</summary>
+              <div className="mt-2 font-mono break-all whitespace-pre-wrap bg-gray-900 border border-gray-800 rounded p-3">
+                {errorRaw}
+              </div>
+            </details>
+          )}
         </div>
       </div>
     );
