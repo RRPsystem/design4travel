@@ -1,4 +1,9 @@
-{
+// AUTO-GENERATED door scripts/embed-content-fixtures.mjs — do NOT edit by hand.
+// Bron: packages/content-fixtures/travel/*.json
+// Regenereer bij elke fixture-wijziging + supabase functions deploy resolve-content-source.
+
+export const EMBEDDED_FIXTURES: Record<string, string> = {
+  'safari-zuid-afrika-mauritius-001': `{
   "travel_compositor_id": "fixture:safari-zuid-afrika-mauritius-001",
   "title": "Safari Zuid-Afrika & strand Mauritius",
   "slug": "fixture-safari-zuid-afrika-mauritius-001",
@@ -355,3 +360,5 @@
   "author_type": "admin",
   "created_at": "2026-05-28T05:16:00.000Z"
 }
+`,
+};

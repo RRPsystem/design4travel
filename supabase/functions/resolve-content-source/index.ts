@@ -19,6 +19,7 @@
 
 import { TravelContentSchema, TravelSourceKindSchema } from './schema.ts';
 import { resolveFixture, type FixtureLoader } from './fixture-adapter.ts';
+import { EMBEDDED_FIXTURES } from './fixtures-embedded.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -59,15 +60,13 @@ async function verifyAuth(
 // Fixture loader — leest embedded fixture-JSON uit ./fixtures/
 // -----------------------------------------------------------------------------
 
-const fixtureLoader: FixtureLoader = async (slug: string) => {
-  // Slug-sanitize: alleen a-z 0-9 -; voorkomt path-traversal.
-  if (!/^[a-z0-9][a-z0-9-]{1,80}$/.test(slug)) return null;
-  const filename = `fixture-${slug}.json`;
-  try {
-    return await Deno.readTextFile(new URL(`./fixtures/${filename}`, import.meta.url));
-  } catch {
-    return null;
-  }
+const fixtureLoader: FixtureLoader = (slug: string) => {
+  // Slug-sanitize: alleen a-z 0-9 -; voorkomt injection in dict-lookup.
+  if (!/^[a-z0-9][a-z0-9-]{1,80}$/.test(slug)) return Promise.resolve(null);
+  // Fixtures zijn embedded in de bundle (Supabase Edge Functions hebben geen
+  // runtime-fs-access voor relative paths). Update via
+  // `node scripts/embed-content-fixtures.mjs`.
+  return Promise.resolve(EMBEDDED_FIXTURES[slug] ?? null);
 };
 
 // -----------------------------------------------------------------------------
