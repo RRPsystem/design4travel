@@ -302,8 +302,10 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
     // Nieuwe versie → oude 'opgeslagen'-badge is niet meer geldig
     setSaveDone(false);
 
+    const tStart = Date.now();
     try {
       // 1. generate met previous_package
+      const t1 = Date.now();
       const genR = await postEdge('generate-studio4-component', {
         reference_path: referencePath,
         chat_prompt: userPrompt,
@@ -311,13 +313,20 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
         previous_package: currentPackage,
         previous_feedback: feedback ?? undefined,
       });
+      // eslint-disable-next-line no-console
+      console.log('[Design4 revise] step 1 generate ok', {
+        ms: Date.now() - t1,
+        iterations: genR.iterations_used,
+        validation_ok: (genR.final_validation as { ok?: boolean } | undefined)?.ok,
+      });
       const finalPkg = genR.final_package as PkgFiles | undefined;
       if (!finalPkg) throw new Error('generate: geen final_package in respons');
       setCurrentPackage(finalPkg);
 
       // 2. rebuild in bestaande sandbox
       setReviseStatus('Aanpassing bouwen…');
-      await postEdge('sandbox-build-trigger', {
+      const t2 = Date.now();
+      const buildR = await postEdge('sandbox-build-trigger', {
         phase: 'build_from_ai',
         sandbox_id: sid,
         manifest: finalPkg.manifest,
@@ -325,12 +334,25 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
         preview_shell_version: PREVIEW_SHELL_VERSION,
         fixture_path: null,
       });
+      // eslint-disable-next-line no-console
+      console.log('[Design4 revise] step 2 build_from_ai ok', {
+        ms: Date.now() - t2,
+        phase: buildR.phase,
+      });
 
       // 3. expose (python server draait al; getHost is idempotent) + iframe reload
+      const t3 = Date.now();
       const exp = await postEdge('sandbox-build-trigger', { phase: 'expose', sandbox_id: sid });
+      // eslint-disable-next-line no-console
+      console.log('[Design4 revise] step 3 expose ok', {
+        ms: Date.now() - t3,
+        url: exp.expose_url,
+      });
       if (exp.expose_url) setExposeUrl(exp.expose_url as string);
       setIframeKey((k) => k + 1);
       setReviseStatus('');
+      // eslint-disable-next-line no-console
+      console.log('[Design4 revise] DONE total ms', Date.now() - tStart);
     } catch (e) {
       const raw = (e as Error).message;
       // eslint-disable-next-line no-console
