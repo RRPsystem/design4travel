@@ -189,7 +189,7 @@ Fotoprioriteit-volgorde in de gateway:
 ## Auth-model
 
 Design4-frontend heeft een user-JWT van Design4-Supabase (`ltzzxjrn...`).
-TravelBridgeAI heeft eigen Supabase (`ai-travelstudio.nl`). Voor de gateway
+TravelBridgeAI heeft eigen Supabase (`studio4.travel`). Voor de gateway
 gaan we ervanuit dat **dezelfde user in beide auth-projecten bestaat** met
 dezelfde `id` — user_provisioning outside scope. Als user niet in TB4-Supabase
 staat: 401.
@@ -270,7 +270,7 @@ Design4-repo krijgt:
    "Mijn reizen (Studio4)" met search-input + resultaten.
 
 **Design4-secrets nodig**:
-- `STUDIO4_GATEWAY_URL` — bv. `https://ai-travelstudio.nl/api/content`
+- `STUDIO4_GATEWAY_URL` — bv. `https://studio4.travel/api/content`
 - Geen shared secret vereist als we user-JWT-doorgeef gebruiken.
 
 ---

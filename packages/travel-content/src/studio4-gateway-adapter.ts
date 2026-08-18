@@ -14,7 +14,7 @@ import { TravelContentSchema, type TravelContent } from './schema.js';
  *
  * Gebruik:
  *   const adapter = new StudioContentGatewayAdapter({
- *     gatewayUrl: 'https://ai-travelstudio.nl/api/content',
+ *     gatewayUrl: 'https://studio4.travel/api/content',
  *     userJwt: '<jwt-from-request>',
  *   });
  *   const content = await adapter.resolve('54545455');

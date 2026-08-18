@@ -37,7 +37,7 @@ describe('StudioContentGatewayAdapter.resolve', () => {
   it('happy path: fetcht /travels/:id met Bearer + parseert TravelContent', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(mockResponse(200, { ok: true, content: VALID_CONTENT }));
     const adapter = new StudioContentGatewayAdapter({
-      gatewayUrl: 'https://ai-travelstudio.nl/api/content',
+      gatewayUrl: 'https://studio4.travel/api/content',
       userJwt: 'user-jwt-abc',
       fetchImpl,
     });
@@ -46,7 +46,7 @@ describe('StudioContentGatewayAdapter.resolve', () => {
 
     expect(fetchImpl).toHaveBeenCalledOnce();
     const [url, opts] = fetchImpl.mock.calls[0]!;
-    expect(url).toBe('https://ai-travelstudio.nl/api/content/travels/54545455');
+    expect(url).toBe('https://studio4.travel/api/content/travels/54545455');
     expect((opts as RequestInit).method).toBe('GET');
     const headers = (opts as { headers: Record<string, string> }).headers;
     expect(headers.Authorization).toBe('Bearer user-jwt-abc');
@@ -55,12 +55,12 @@ describe('StudioContentGatewayAdapter.resolve', () => {
   it('strippt trailing slash op gatewayUrl', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(mockResponse(200, { ok: true, content: VALID_CONTENT }));
     const adapter = new StudioContentGatewayAdapter({
-      gatewayUrl: 'https://ai-travelstudio.nl/api/content/',
+      gatewayUrl: 'https://studio4.travel/api/content/',
       userJwt: 'jwt',
       fetchImpl,
     });
     await adapter.resolve('12345');
-    expect(fetchImpl.mock.calls[0]![0]).toBe('https://ai-travelstudio.nl/api/content/travels/12345');
+    expect(fetchImpl.mock.calls[0]![0]).toBe('https://studio4.travel/api/content/travels/12345');
   });
 
   it('throws bij lege sourceId', async () => {
