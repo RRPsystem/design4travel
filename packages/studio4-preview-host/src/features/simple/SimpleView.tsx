@@ -38,6 +38,12 @@ function friendlyError(rawError: string | null | undefined): string {
   if (!rawError) return 'Er ging iets mis. Probeer het opnieuw.';
   const r = rawError.toLowerCase();
   if (r.includes('rate_limit_concurrent')) return 'Er lopen momenteel te veel ontwerpen tegelijk. Wacht een paar minuten en probeer opnieuw — oude sessies worden automatisch opgeruimd.';
+  if (r.includes('studio4_gateway_not_configured')) return 'De Studio4-integratie is nog niet geconfigureerd. Vraag de beheerder om de gateway aan te zetten.';
+  if (r.includes('studio4_invalid_tc_id') || r.includes('studio4_invalid_source_id')) return 'Deze TC-ID heeft geen geldig formaat. Alleen letters, cijfers, - en _ zijn toegestaan.';
+  if (r.includes('studio4_travel_not_found')) return 'Deze reis is niet gevonden in Studio4. Controleer de TC-ID.';
+  if (r.includes('studio4_gateway_auth')) return 'Je account heeft geen toegang tot Studio4-reizen. Vraag de beheerder om je rol aan te passen.';
+  if (r.includes('studio4_gateway_schema_violation')) return 'Studio4 gaf onvolledige reisdata terug. Meld dit aan de beheerder.';
+  if (r.includes('studio4_gateway')) return 'De Studio4-gateway reageerde niet goed. Probeer het over enkele minuten opnieuw.';
   if (r.includes('rate_limit_hourly')) return 'Je hebt vandaag al veel ontwerpen gemaakt. Probeer het over een uur opnieuw.';
   if (r.includes('missing_bearer_token') || r.includes('auth_verify') || r.includes('sessie is verlopen')) return 'Je sessie is verlopen. Log opnieuw in.';
   if (r.includes('reference_path_required')) return 'Er ging iets mis met de afbeelding. Kies een ander bestand en probeer opnieuw.';
@@ -60,19 +66,25 @@ interface CompareFeedback {
 // Content-source keuzes voor v1. Later dynamisch via resolve-content-source
 // endpoint dat een lijst kan teruggeven; nu hardcoded voor spike.
 type ContentSourceChoice =
-  | { key: 'none'; label: 'Geen (blanco ontwerp)' }
-  | { key: 'safari'; label: 'Safari Zuid-Afrika + Mauritius (voorbeeld)'; kind: 'fixture'; sourceId: 'safari-zuid-afrika-mauritius-001' };
+  | { key: 'none'; label: string }
+  | { key: 'safari'; label: string; kind: 'fixture'; sourceId: string }
+  | { key: 'studio4'; label: string; kind: 'studio4_content' };
 
 const CONTENT_SOURCE_CHOICES: ReadonlyArray<ContentSourceChoice> = [
   { key: 'none', label: 'Geen (blanco ontwerp)' },
   { key: 'safari', label: 'Safari Zuid-Afrika + Mauritius (voorbeeld)', kind: 'fixture', sourceId: 'safari-zuid-afrika-mauritius-001' },
+  { key: 'studio4', label: 'Studio4-reis (TC-ID)', kind: 'studio4_content' },
 ];
+
+// TC-ID formaat: alfanumeriek + underscore/dash, max 64 tekens.
+const TC_ID_INPUT_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 
 export function SimpleView({ accessToken }: { accessToken: string }) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [file, setFile] = useState<File | null>(null);
   const [prompt, setPrompt] = useState('');
   const [contentChoice, setContentChoice] = useState<ContentSourceChoice['key']>('none');
+  const [studio4TcId, setStudio4TcId] = useState<string>('');
   const [contentSourceId, setContentSourceId] = useState<string | null>(null);
   const [statusText, setStatusText] = useState('');
   const [errorText, setErrorText] = useState<string | null>(null);
@@ -162,11 +174,21 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
       let resolvedContentSourceId: string | null = null;
       const choice = CONTENT_SOURCE_CHOICES.find((c) => c.key === contentChoice);
       if (choice && choice.key !== 'none') {
+        let sourceId: string;
+        if (choice.key === 'studio4') {
+          const tcId = studio4TcId.trim();
+          if (!TC_ID_INPUT_REGEX.test(tcId)) {
+            throw new Error('studio4_invalid_tc_id: geef een geldige TC-ID (letters, cijfers, - en _ toegestaan, max 64 tekens)');
+          }
+          sourceId = tcId;
+        } else {
+          sourceId = choice.sourceId;
+        }
         setStatusText('Reis-inhoud ophalen…');
         const rc = await fetch(`${SUPABASE_URL}/functions/v1/resolve-content-source`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ kind: choice.kind, source_id: choice.sourceId }),
+          body: JSON.stringify({ kind: choice.kind, source_id: sourceId }),
         }).then((r) => r.json());
         if (!rc.ok || !rc.content_source_id) throw new Error(rc.error ?? 'content_source_failed');
         resolvedContentSourceId = rc.content_source_id as string;
@@ -477,6 +499,7 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
     setFile(null);
     setPrompt('');
     setContentChoice('none');
+    setStudio4TcId('');
     setContentSourceId(null);
     setExposeUrl(null);
     setErrorText(null);
@@ -739,9 +762,25 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
                 <option key={c.key} value={c.key}>{c.label}</option>
               ))}
             </select>
-            <div className="mt-1 text-[11px] text-gray-500">
-              Kies een voorbeeldreis om je ontwerp met echte titels/bestemmingen te vullen. Later komen hier je eigen reizen uit TravelCompositor en Studio4.
-            </div>
+            {contentChoice === 'studio4' && (
+              <div className="mt-2">
+                <input
+                  type="text"
+                  value={studio4TcId}
+                  onChange={(e) => setStudio4TcId(e.target.value)}
+                  placeholder="TC-ID, bv. 54545455"
+                  className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm text-gray-100 focus:border-white/60 focus:outline-none font-mono"
+                />
+                <div className="mt-1 text-[11px] text-gray-500">
+                  Studio4 haalt de reis-inhoud via de gateway. Design4 ziet geen TC-key of ruwe data.
+                </div>
+              </div>
+            )}
+            {contentChoice !== 'studio4' && (
+              <div className="mt-1 text-[11px] text-gray-500">
+                Kies een voorbeeldreis of "Studio4-reis (TC-ID)" om een reis uit Studio4 te gebruiken.
+              </div>
+            )}
           </div>
 
           <div>
@@ -759,7 +798,10 @@ export function SimpleView({ accessToken }: { accessToken: string }) {
           <button
             type="button"
             onClick={createDesign}
-            disabled={!file}
+            disabled={
+              !file ||
+              (contentChoice === 'studio4' && !TC_ID_INPUT_REGEX.test(studio4TcId.trim()))
+            }
             className="w-full inline-flex items-center justify-center gap-2 rounded bg-white text-gray-900 px-4 py-3 font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Sparkles className="h-4 w-4" />

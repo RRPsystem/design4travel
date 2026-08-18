@@ -70,6 +70,58 @@ const fixtureLoader: FixtureLoader = (slug: string) => {
 };
 
 // -----------------------------------------------------------------------------
+// Studio4-content resolver (inline — Deno kan geen workspace-package importeren)
+// -----------------------------------------------------------------------------
+
+const STUDIO4_ID_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
+
+async function resolveStudio4Content(
+  sourceId: string,
+  gatewayUrl: string,
+  userJwt: string,
+): Promise<{ content: unknown; hash: string; version: string }> {
+  if (!STUDIO4_ID_REGEX.test(sourceId)) {
+    throw new Error(`studio4_invalid_source_id: "${sourceId}"`);
+  }
+  const url = `${gatewayUrl.replace(/\/+$/, '')}/travels/${encodeURIComponent(sourceId)}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  let r: Response;
+  try {
+    r = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${userJwt}`, Accept: 'application/json' },
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (r.status === 401 || r.status === 403) throw new Error(`studio4_gateway_auth_${r.status}`);
+  if (r.status === 404) throw new Error(`studio4_travel_not_found:${sourceId}`);
+  if (!r.ok) {
+    const t = await r.text().catch(() => '');
+    throw new Error(`studio4_gateway_http_${r.status}: ${t.slice(0, 200)}`);
+  }
+  const body = await r.json() as { ok?: boolean; content?: unknown; error?: string };
+  if (!body.ok || !body.content) {
+    throw new Error(`studio4_gateway_error: ${body.error ?? 'unknown'}`);
+  }
+  // Strict Zod-parse — gateway MOET conform TravelContent v1
+  const check = TravelContentSchema.safeParse(body.content);
+  if (!check.success) {
+    throw new Error(
+      `studio4_gateway_schema_violation: ${check.error.issues.map((i) => `${i.path.join('.')}:${i.message}`).slice(0, 3).join(';')}`,
+    );
+  }
+  const c = check.data as { meta?: { hash?: string; version?: string } };
+  return {
+    content: check.data,
+    hash: c.meta?.hash ?? '',
+    version: c.meta?.version ?? '1.0',
+  };
+}
+
+// -----------------------------------------------------------------------------
 // Persistence — upsert in content_sources
 // -----------------------------------------------------------------------------
 
@@ -166,22 +218,54 @@ Deno.serve(async (req: Request) => {
     });
   }
 
-  // Alleen fixture geïmplementeerd — andere kinds → 501
-  if (kind !== 'fixture') {
-    return new Response(
-      JSON.stringify({
-        ok: false,
-        error: `kind_not_implemented:${kind}`,
-        details: 'TravelCompositor / Studio4-content / manual komen in vervolgiteratie. Nu alleen fixture-kind.',
-      }),
-      { status: 501, headers: { ...CORS, 'Content-Type': 'application/json' } },
-    );
-  }
-
-  // Resolve via fixture-adapter
-  let resolved;
+  // Resolve dispatch per kind. Alleen fixture + studio4_content geïmplementeerd;
+  // travel_compositor + manual komen in vervolgiteratie.
+  let resolved: { content: unknown; hash: string; version: string };
   try {
-    resolved = await resolveFixture(body.source_id ?? '', fixtureLoader);
+    if (kind === 'fixture') {
+      resolved = await resolveFixture(body.source_id ?? '', fixtureLoader);
+    } else if (kind === 'studio4_content') {
+      // Gateway-URL vereist (fail-safe: geen fallback, geen implicit bypass).
+      const gatewayUrl = Deno.env.get('STUDIO4_GATEWAY_URL');
+      if (!gatewayUrl) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error: 'studio4_gateway_not_configured',
+            details: 'STUDIO4_GATEWAY_URL secret ontbreekt in Supabase — vraag beheerder om Studio4-integratie aan te zetten.',
+          }),
+          { status: 503, headers: { ...CORS, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      // Forward user-JWT naar gateway. Service-role calls kunnen geen
+      // studio4_content resolven — dit vereist een echte user-context zodat
+      // de gateway kan rol-checken en org-scopen.
+      if (auth.kind !== 'user') {
+        return new Response(
+          JSON.stringify({ ok: false, error: 'studio4_requires_user_auth' }),
+          { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } },
+        );
+      }
+      const forwardedJwt = (req.headers.get('authorization') || req.headers.get('Authorization') || '').slice(7).trim();
+      if (!forwardedJwt) {
+        return new Response(
+          JSON.stringify({ ok: false, error: 'studio4_missing_forwarded_jwt' }),
+          { status: 401, headers: { ...CORS, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      resolved = await resolveStudio4Content(body.source_id ?? '', gatewayUrl, forwardedJwt);
+    } else {
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          error: `kind_not_implemented:${kind}`,
+          details: 'travel_compositor + manual komen in vervolgiteratie.',
+        }),
+        { status: 501, headers: { ...CORS, 'Content-Type': 'application/json' } },
+      );
+    }
   } catch (e) {
     return new Response(
       JSON.stringify({ ok: false, error: `resolve_failed: ${(e as Error).message}` }),
