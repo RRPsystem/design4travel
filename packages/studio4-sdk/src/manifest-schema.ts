@@ -54,6 +54,23 @@ const ConsumesSchema = z.object({
 });
 
 /**
+ * assets — asset-manifest voor image-slots. Component gebruikt
+ * `props.assets['<key>']`; sandbox-build-trigger genereert na canonical
+ * gate een `resolved-assets.json` met key→URL-mapping via media-search.
+ *
+ * Kritiek: dit vervangt de oude `{{image:...}}`-token-flow. Component-TSX
+ * die door canonical goedgekeurd wordt, wordt daarna NIET meer gewijzigd —
+ * de resolved URLs komen via een aparte prop.
+ */
+const AssetEntrySchema = z.object({
+  key: z
+    .string()
+    .regex(/^[a-z][a-z0-9-]{0,39}$/, 'asset key moet kebab-case (start met letter, 1-40 tekens)'),
+  query: z.string().min(2).max(200),
+  role: z.enum(['hero-bg', 'card', 'gallery', 'inline', 'background']).optional(),
+}).strict();
+
+/**
  * Volledig manifest-schema. Validator (`./validator.ts`) roept
  * `ManifestSchema.safeParse(json)` aan als eerste gate; daarna komen de
  * server-side policy-checks (import-whitelist, AST-scans, image-domains, ...).
@@ -81,6 +98,13 @@ export const ManifestSchema = z
     requestedImports: z.array(z.string()).min(1).max(20),
     consumes: ConsumesSchema,
     media: z.array(MediaEntrySchema).max(8).optional(),
+    assets: z
+      .array(AssetEntrySchema)
+      .max(20)
+      .optional()
+      .refine((arr) => !arr || new Set(arr.map((a) => a.key)).size === arr.length, {
+        message: 'assets[].key moet uniek zijn',
+      }),
     pageLevel: PageLevelSchema.optional(),
     responsive: ResponsiveSchema.optional(),
     a11y: A11ySchema.optional(),

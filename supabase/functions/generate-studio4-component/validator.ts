@@ -32,6 +32,7 @@ interface Manifest {
   requestedImports?: string[];
   consumes?: unknown;
   media?: unknown[];
+  assets?: Array<{ key?: string; query?: string; role?: string }>;
   pageLevel?: unknown;
   responsive?: unknown;
   a11y?: unknown;
@@ -215,6 +216,39 @@ export function validatePackage(
           severity: 'error', rule: 'policy.image-domain-not-allowed',
           message: `URL naar "${host}" niet in policy.allowedImageDomains (${policy.allowedImageDomains.join(', ')})`,
           location: { file: 'Component.tsx' },
+        });
+      }
+    }
+  }
+
+  // 5. Asset-manifest cross-check. Regex-based (Deno heeft geen AST parser
+  // die we willen bundlen). We zoeken `assets['xxx']`, `assets["xxx"]` in de
+  // gemaskerde TSX zodat string-literals niet als asset-ref tellen. Elke
+  // gevonden key MOET in manifest.assets voorkomen.
+  if (maskedTsx && manifest) {
+    const declared = new Set<string>((manifest.assets ?? []).map((a) => a.key ?? '').filter(Boolean));
+    const used = new Set<string>();
+    // Match assets['key'] of assets["key"] — computed member-access
+    const ASSET_REF = /\bassets\s*\[\s*(['"])([a-z][a-z0-9-]{0,39})\1\s*\]/g;
+    let m;
+    while ((m = ASSET_REF.exec(maskedTsx)) !== null) {
+      used.add(m[2]!);
+    }
+    for (const k of used) {
+      if (!declared.has(k)) {
+        issues.push({
+          severity: 'error', rule: 'policy.asset-key-not-declared',
+          message: `Component gebruikt assets["${k}"] maar deze key staat niet in manifest.assets`,
+          location: { file: 'Component.tsx' },
+        });
+      }
+    }
+    for (const k of declared) {
+      if (!used.has(k)) {
+        issues.push({
+          severity: 'warning', rule: 'policy.asset-key-unused',
+          message: `manifest.assets bevat "${k}" maar Component gebruikt die niet`,
+          location: { file: 'manifest.json' },
         });
       }
     }

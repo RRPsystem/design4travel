@@ -13,9 +13,7 @@
     "sourceReferenceId": "ref_manual_safari_hero"
   },
   "requestedImports": [
-    "react",
     "lucide-react",
-    "../../../lib/imageUtils",
     "./types"
   ],
   "consumes": {
@@ -26,6 +24,9 @@
   "media": [
     { "role": "background", "kind": "image", "minWidth": 1600 },
     { "role": "foreground", "kind": "image", "cutout": true, "optional": true }
+  ],
+  "assets": [
+    { "key": "hero-bg", "query": "safari sunset kruger elephants", "role": "hero-bg" }
   ],
   "pageLevel": {
     "requiresTransparentNav": true,

@@ -282,6 +282,93 @@ function validateForbiddenGlobals(
 }
 
 // -----------------------------------------------------------------------------
+// Asset-key cross-check (manifest.assets ↔ TSX `assets['key']` referenties)
+// -----------------------------------------------------------------------------
+
+/**
+ * Verzamel alle keys die de TSX uit `props.assets` haalt. Herkent twee vormen:
+ *   1. `assets['hero-bg']` / `assets["hero-bg"]` — MemberExpression met
+ *      computed=true en Literal-property.
+ *   2. `assets.heroBg` — computed=false, dot-access. NB: onze schema-regex
+ *      staat alleen kebab-case keys toe (bevat `-`); dot-access matcht dus
+ *      niet en hoeven we niet te ondersteunen. We accepteren desalniettemin
+ *      dot-access als soft-warning.
+ *
+ * Alleen keys op een identifier genaamd `assets` tellen mee (destructuring
+ * uit SectionProps of losse variable).
+ */
+function collectAssetKeyReferences(ast: TSESTree.Program): { keys: Set<string>; dotAccess: Set<string> } {
+  const keys = new Set<string>();
+  const dotAccess = new Set<string>();
+  walk(ast, (node) => {
+    if (node.type !== 'MemberExpression') return;
+    const me = node as TSESTree.MemberExpression;
+    const obj = me.object as TSESTree.Node;
+    if (obj.type !== 'Identifier' || (obj as TSESTree.Identifier).name !== 'assets') return;
+    if (me.computed) {
+      const prop = me.property as TSESTree.Node;
+      if (prop.type === 'Literal' && typeof (prop as TSESTree.Literal).value === 'string') {
+        keys.add((prop as TSESTree.Literal).value as string);
+      }
+      // Non-literal computed-access (`assets[varKey]`) → dynamic; validator
+      // kan die niet cross-checken. Fine — mag, maar declareer keys manueel.
+    } else {
+      const prop = me.property as TSESTree.Node;
+      if (prop.type === 'Identifier') {
+        dotAccess.add((prop as TSESTree.Identifier).name);
+      }
+    }
+  });
+  return { keys, dotAccess };
+}
+
+function validateAssetManifest(
+  componentTsx: string,
+  ast: TSESTree.Program | null,
+  manifest: Studio4ComponentManifest | null,
+  issues: ValidationIssue[],
+): void {
+  const declared = new Set<string>((manifest?.assets ?? []).map((a) => a.key));
+  const { keys: used, dotAccess } = ast
+    ? collectAssetKeyReferences(ast)
+    : { keys: new Set<string>(), dotAccess: new Set<string>() };
+
+  // Elke `assets['x']` in TSX moet een matchende manifest.assets[i].key hebben
+  for (const k of used) {
+    if (!declared.has(k)) {
+      issues.push({
+        severity: 'error',
+        rule: 'policy.asset-key-not-declared',
+        message: `Component gebruikt assets["${k}"] maar deze key staat niet in manifest.assets. Declareer met {"key":"${k}","query":"..."} of verwijder de referentie.`,
+        location: { file: 'Component.tsx' },
+      });
+    }
+  }
+  // Elke gedeclareerde asset moet minstens 1x gebruikt worden — anders is 't ballast
+  for (const k of declared) {
+    if (!used.has(k)) {
+      issues.push({
+        severity: 'warning',
+        rule: 'policy.asset-key-unused',
+        message: `manifest.assets bevat "${k}" maar Component gebruikt die niet. Verwijder of gebruik in TSX.`,
+        location: { file: 'manifest.json' },
+      });
+    }
+  }
+  // Dot-access accepteren maar waarschuwen (kebab-keys werken niet met dot)
+  for (const k of dotAccess) {
+    issues.push({
+      severity: 'warning',
+      rule: 'policy.asset-dot-access',
+      message: `Component gebruikt assets.${k} (dot-access). Prefereer bracket-notation assets["${k}"] voor consistency met kebab-case keys.`,
+      location: { file: 'Component.tsx' },
+    });
+  }
+  // Anti-warning: source niet direct nodig hier — behoud voor toekomstige fallback
+  void componentTsx;
+}
+
+// -----------------------------------------------------------------------------
 // Image-URL domein-scan (string-literals + template-literals in de AST)
 // -----------------------------------------------------------------------------
 
@@ -351,6 +438,7 @@ export function validatePackage(files: PackageFiles): ValidationResult {
     const ast = parseSource(files.componentTsx);
     validateForbiddenGlobals(files.componentTsx, ast, issues);
     validateImageDomains(files.componentTsx, ast, issues);
+    if (ast) validateAssetManifest(files.componentTsx, ast, manifest, issues);
   }
 
   const errorCount = issues.filter((i) => i.severity === 'error').length;

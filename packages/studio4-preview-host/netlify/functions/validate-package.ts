@@ -63,6 +63,12 @@ const KEBAB = /^[a-z][a-z0-9-]*$/;
 const SNAKE = /^[a-z][a-z0-9_]*$/;
 const PASCAL = /^[A-Z][A-Za-z0-9]*$/;
 
+const AssetEntry = z.object({
+  key: z.string().regex(/^[a-z][a-z0-9-]{0,39}$/),
+  query: z.string().min(2).max(200),
+  role: z.enum(['hero-bg', 'card', 'gallery', 'inline', 'background']).optional(),
+}).strict();
+
 const ManifestSchema = z.object({
   sdkVersion: z.literal('1.0'),
   id: z.string().regex(KEBAB),
@@ -72,6 +78,7 @@ const ManifestSchema = z.object({
   registryKey: z.string().regex(SNAKE),
   category: z.string().min(1),
   requestedImports: z.array(z.string()),
+  assets: z.array(AssetEntry).max(20).optional(),
 }).passthrough();
 
 // -----------------------------------------------------------------------------
@@ -296,6 +303,43 @@ function validatePackage(manifestJson: string, componentTsx: string): {
           rule: 'policy.image-domain-not-allowed',
           message: `URL naar "${host}" niet in POLICY_V1_0.allowedImageDomains.`,
           location: { file: 'Component.tsx' },
+        });
+      }
+    }
+  }
+
+  // 5. Asset-manifest cross-check via AST — herken assets['key'] refs
+  if (ast && manifest) {
+    const declared = new Set<string>((manifest.assets ?? []).map((a) => a.key));
+    const used = new Set<string>();
+    walk(ast, (node) => {
+      if (node.type !== 'MemberExpression') return;
+      const me = node as TSESTree.MemberExpression;
+      const obj = me.object as TSESTree.Node;
+      if (obj.type !== 'Identifier' || (obj as TSESTree.Identifier).name !== 'assets') return;
+      if (!me.computed) return;
+      const prop = me.property as TSESTree.Node;
+      if (prop.type === 'Literal' && typeof (prop as TSESTree.Literal).value === 'string') {
+        used.add((prop as TSESTree.Literal).value as string);
+      }
+    });
+    for (const k of used) {
+      if (!declared.has(k)) {
+        issues.push({
+          severity: 'error',
+          rule: 'policy.asset-key-not-declared',
+          message: `Component gebruikt assets["${k}"] maar deze key staat niet in manifest.assets.`,
+          location: { file: 'Component.tsx' },
+        });
+      }
+    }
+    for (const k of declared) {
+      if (!used.has(k)) {
+        issues.push({
+          severity: 'warning',
+          rule: 'policy.asset-key-unused',
+          message: `manifest.assets bevat "${k}" maar Component gebruikt die niet.`,
+          location: { file: 'manifest.json' },
         });
       }
     }

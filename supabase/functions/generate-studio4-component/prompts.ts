@@ -42,6 +42,11 @@ De manifest is een JSON-object (GEEN string) met exact deze structuur:
   "media": [
     { "role": "background", "kind": "image", "minWidth": 1600 }
   ],
+  "assets": [
+    { "key": "hero-bg", "query": "safari sunset kruger elephants", "role": "hero-bg" },
+    { "key": "card-1",  "query": "lion pride savanna",             "role": "card" },
+    { "key": "card-2",  "query": "beach mauritius palm trees",     "role": "card" }
+  ],
   "pageLevel": {
     "requiresTransparentNav": true,
     "recommendedPage": "home"
@@ -84,61 +89,75 @@ Elke andere import → validator-error. Geen new packages, geen absolute paths.
 fetch, XMLHttpRequest, WebSocket, EventSource, localStorage, sessionStorage, indexedDB, eval, Function.
 **Vermijd ook mentions in doc-comments** — de validator scant naïef en pikt "fetch" in een comment als error.
 
-## Image-URLs — VERPLICHT via tokens, NOOIT concrete URLs
+## Image-URLs — VERPLICHT via \`assets\`-prop, NOOIT concrete URLs
 
-**Elke** \`<img src>\` en elke background-image MOET een **image-token** zijn in exact dit format:
+Component ontvangt \`assets: Record<string, string>\` uit \`SectionProps\`. Elke image gebruikt \`assets['<key>']\` als \`src\`- of \`backgroundImage\`-waarde. In \`manifest.json\` declareer je elke gebruikte key met de bijbehorende search-query in het \`assets\`-veld.
 
+Design4-backend genereert NA canonical-gate een aparte \`resolved-assets.json\` (key → URL, via Unsplash/Pexels) en levert die als \`assets\`-prop aan je component. Jouw TSX-code wordt niet aangepast na goedkeuring — dat is een harde security-eis.
+
+**Voorbeeld — MANIFEST + COMPONENT samen**:
+
+Manifest:
+\`\`\`json
+"assets": [
+  { "key": "hero-bg", "query": "safari sunset kruger elephants", "role": "hero-bg" },
+  { "key": "card-1",  "query": "lion pride savanna",             "role": "card" },
+  { "key": "card-2",  "query": "beach mauritius palm trees",     "role": "card" }
+]
 \`\`\`
-{{image:<role>|<search-query>}}
-\`\`\`
 
-- \`role\`: korte identifier voor deze afbeelding binnen de component (\`hero-bg\`, \`card-1\`, \`gallery-2\`, etc.). Uniek maken zodat elke image z'n eigen slot heeft.
-- \`search-query\`: 2-6 Engelse (of Nederlandse) zoekwoorden die de gewenste foto beschrijven, thema-specifiek. Bijv. \`safari sunset kruger\`, \`beach mauritius palm trees\`, \`elephant africa savanna\`.
-
-Voorbeelden (LET OP: token direct in string-attribuut, GEEN JavaScript-expressie):
+Component:
 \`\`\`tsx
-<img src="{{image:hero-bg|safari kruger sunset elephants}}" alt="Safari zonsondergang" />
-<div style={{ backgroundImage: \`url({{image:card-1|lion pride savanna}})\` }} />
-<img src="{{image:gallery-2|beach mauritius palm}}" alt="Strand Mauritius" />
+export function SafariHeroSection({ brand, primaryColor, pageContent, assets = {} }: SectionProps) {
+  return (
+    <section
+      className="relative min-h-screen"
+      style={{ backgroundImage: \`url(\${assets['hero-bg'] ?? ''})\` }}
+    >
+      <img src={assets['card-1']} alt="Leeuwentroep in savanne" />
+      <img src={assets['card-2']} alt="Strand met palmen op Mauritius" />
+    </section>
+  );
+}
 \`\`\`
-
-**Waarom tokens en NIET concrete URLs**: de Design4-backend zoekt via Unsplash + Pexels API's naar de best passende **bestaande** foto en vervangt de token door de echte URL voordat het component in de sandbox draait. Als je zelf een \`images.unsplash.com/photo-XYZ\` verzint bestaat die vrijwel zeker niet → 404 → gebroken preview. Gebruik ALTIJD tokens.
 
 **Regels**:
-- Elke image-src is een token, DIRECT als string-value: \`src="{{image:role|query}}"\`. NOOIT \`src={"{{image:...}}"}\` of \`src={var}\` waar var een helper-object is.
-- Backgrounds: \`style={{ backgroundImage: \\\`url({{image:role|query}})\\\` }}\`.
-- Kies zoekwoorden die matchen met de reiscontext van de fixture / user prompt.
-- Beschrijf elk beeld met een unieke \`role\` — geen dubbele roles binnen 1 component.
-- **Geen** \`https://...\` in src. **Geen** kale \`/foo.jpg\`. **Geen** \`<img alt="..."/>\` zonder src.
-- **Geen** \`imgHeroResponsive()\`/\`imgCardResponsive()\`-wrapping — die helpers geven een OBJECT terug, niet een string, en resulteren in \`src="[object Object]"\`.
+- Elke image-src of backgroundImage komt uit \`assets['<key>']\`. NOOIT \`{{image:...}}\`-tokens, NOOIT hardcoded URLs.
+- Elke \`assets['x']\` in je TSX MOET een matchend \`{ "key": "x", "query": "..." }\` in manifest.assets hebben — validator wijst mismatch af.
+- \`key\`: kebab-case (a-z 0-9 -), start met letter, max 40 tekens.
+- \`query\`: 2-6 zoekwoorden voor de beeldbank-lookup (Engels of Nederlands, thema-specifiek).
+- \`role\` (optioneel): \`"hero-bg" | "card" | "gallery" | "inline" | "background"\` — hint aan backend voor beeldkeuze.
+- Destructureer \`assets\` uit props met een default \`{}\` zodat je component geen null-crashes heeft als backend geen assets levert.
+- **NOOIT** \`imgHeroResponsive()\` of \`imgCardResponsive()\` — die helpers geven een object terug en renderen \`[object Object]\`.
+- **NOOIT** \`https://images.unsplash.com/...\` of \`https://images.pexels.com/...\` hardcoderen — die staan niet in de whitelist en canonical wijst 'm af.
 
 ## Component-signature
 
 \`\`\`tsx
 import type { SectionProps } from './types';
 
-export function <ComponentName>({ brand, primaryColor, pageContent }: SectionProps) {
+export function <ComponentName>({ brand, primaryColor, pageContent, assets = {} }: SectionProps) {
   // ...
   return (<section>...</section>);
 }
 \`\`\`
 
 - **Named export**, geen default.
-- Signature exact zoals boven.
+- Signature exact zoals boven — inclusief \`assets = {}\`-destructuring als je images gebruikt.
 - Hooks (useState, useMemo, etc.) MOETEN vóór elke early-return staan.
 - Return type: JSX.Element of null.
 
 ## Wat je NIET mag doen
 
 - Geen \`<nav>\` renderen — dat komt van SiteLayout in TravelBridgeAI.
-- Geen \`fetch\` of data-calls — alle data komt via \`props.pageContent\` en \`props.brand\`.
+- Geen \`fetch\` of data-calls — alle data komt via \`props.pageContent\`, \`props.brand\`, \`props.assets\`.
 - Geen \`window.*\` / \`document.*\` zonder \`typeof window !== 'undefined'\` guard.
-- **Gebruik GEEN \`imgHeroResponsive\`/\`imgCardResponsive\`-helpers** in Component.tsx. Zet het image-token DIRECT in \`src\` of \`backgroundImage\`. Voorbeeld goed: \`<img src="{{image:hero|safari}}" alt="Safari" />\`. Voorbeeld FOUT: \`const bg = imgHeroResponsive("{{image:hero|safari}}"); <img src={bg} />\` — dat renderd \`[object Object]\` omdat de helper een object teruggeeft.
+- **Gebruik GEEN \`imgHeroResponsive\`/\`imgCardResponsive\`-helpers** in Component.tsx — die geven een object terug (\`{src,srcSet,sizes}\`) en resulteren in \`src="[object Object]"\`. Ook geen \`{{image:...}}\`-tokens meer — die zijn vervangen door de \`assets\`-prop.
 
 ## Kwaliteitseisen
 
 - **Nederlands als standaardtaal**: alle zichtbare content (titels, subtitles, CTA-labels, feature-tekst, tagline-chips) MOET in het Nederlands zijn, ook als de reference Engelstalig is. Alleen als de gebruiker expliciet om een andere taal vraagt: die taal.
-- **Images altijd via {{image:role|query}}-tokens** (zie hierboven): NOOIT zelf \`https://images.unsplash.com/photo-XYZ\` verzinnen — die IDs bestaan niet en geven 404. Backend vervangt tokens door echte URLs.
+- **Images altijd via \`assets['<key>']\`-prop** (zie hierboven): NOOIT zelf \`https://images.unsplash.com/photo-XYZ\` verzinnen — die IDs bestaan niet en geven 404. Design4-backend vult de URLs in via \`assets\`-prop nadat je manifest.assets is goedgekeurd.
 - **Full-bleed visuals**: hero's mogen \`min-h-screen\` en absolute layering gebruiken.
 - **Responsive**: gebruik Tailwind breakpoints (\`sm md lg xl 2xl\`).
 - **Brand-aware**: primaryColor via inline \`style={{ backgroundColor: primaryColor }}\`.

@@ -695,39 +695,46 @@ async function callCanonicalValidator(
 }
 
 /**
- * Image-token resolver — vervangt `{{image:role|query}}`-tokens in de
- * componentTsx door concrete URLs via de media-search Edge Function.
- * Wordt aangeroepen NA canonical validatie (die de tokens accepteert
- * omdat ze geen URL-pattern matchen) en VÓÓR sandbox-files-write.
+ * Asset-manifest resolver — post-canonical, byte-exact componentTsx.
  *
- * Dedupe op query zodat 5x dezelfde search = 1 API-call. Fail-soft:
- * bij search-fouten blijft de token staan (broken image > total-fail).
+ * Leest `manifest.assets` (gedeclareerd door AI en gevalideerd door canonical),
+ * roept media-search voor elke unieke query, en bouwt een {key→URL}-map.
+ * Deze wordt door sandbox-build als `resolved-assets.json` opgeslagen en
+ * door App.tsx als `assets`-prop doorgegeven. Component-TSX wordt NIET
+ * gewijzigd — dat is de security-invariant.
+ *
+ * Fail-soft: bij search-fouten krijgt de key een lege string. Component moet
+ * defensief zijn (`assets['x'] ?? ''`).
  */
-const IMAGE_TOKEN_REGEX = /\{\{image:([^|}]+)\|([^}]+)\}\}/g;
-
-interface TokenResolveResult {
-  componentTsx: string;
-  tokensFound: number;
-  tokensResolved: number;
+interface AssetResolveResult {
+  assets: Record<string, string>;
+  keysFound: number;
+  keysResolved: number;
   sources: Record<string, number>;
   errors: string[];
 }
 
-async function resolveImageTokens(
-  componentTsx: string,
+async function resolveAssetManifest(
+  manifest: Record<string, unknown>,
   supabaseUrl: string,
   serviceKey: string,
-): Promise<TokenResolveResult> {
-  const matches = [...componentTsx.matchAll(IMAGE_TOKEN_REGEX)];
-  const uniqueQueries = new Set<string>();
-  for (const m of matches) uniqueQueries.add(m[2]!.trim());
-
-  const urlByQuery = new Map<string, string>();
+): Promise<AssetResolveResult> {
+  const declared = (manifest.assets ?? []) as Array<{ key?: string; query?: string; role?: string }>;
+  const assets: Record<string, string> = {};
   const sources: Record<string, number> = {};
   const errors: string[] = [];
 
+  // Dedup op query zodat identieke searches maar 1x API-call kosten
+  const queryToKeys = new Map<string, string[]>();
+  for (const a of declared) {
+    if (!a.key || !a.query) continue;
+    const q = a.query.trim();
+    if (!queryToKeys.has(q)) queryToKeys.set(q, []);
+    queryToKeys.get(q)!.push(a.key);
+  }
+
   await Promise.all(
-    [...uniqueQueries].map(async (q) => {
+    [...queryToKeys.entries()].map(async ([q, keys]) => {
       try {
         const r = await fetch(`${supabaseUrl}/functions/v1/media-search`, {
           method: 'POST',
@@ -741,26 +748,23 @@ async function resolveImageTokens(
         const j = (await r.json()) as { ok?: boolean; url?: string; source?: string; error?: string };
         if (!r.ok || !j.ok || !j.url) {
           errors.push(`"${q}": ${j.error ?? `http_${r.status}`}`);
+          for (const k of keys) assets[k] = '';
           return;
         }
-        urlByQuery.set(q, j.url);
+        for (const k of keys) assets[k] = j.url;
         const src = j.source ?? 'unknown';
-        sources[src] = (sources[src] ?? 0) + 1;
+        sources[src] = (sources[src] ?? 0) + keys.length;
       } catch (e) {
         errors.push(`"${q}": ${(e as Error).message}`);
+        for (const k of keys) assets[k] = '';
       }
     }),
   );
 
-  let resolved = 0;
-  const out = componentTsx.replace(IMAGE_TOKEN_REGEX, (full, _role: string, query: string) => {
-    const url = urlByQuery.get(query.trim());
-    if (!url) return full;
-    resolved++;
-    return url;
-  });
+  const keysFound = declared.filter((a) => a.key && a.query).length;
+  const keysResolved = Object.values(assets).filter((v) => v.length > 0).length;
 
-  return { componentTsx: out, tokensFound: matches.length, tokensResolved: resolved, sources, errors };
+  return { assets, keysFound, keysResolved, sources, errors };
 }
 
 /**
@@ -833,7 +837,7 @@ async function handleBuildFromAi(
   const transparentNav = Boolean(
     (manifest.pageLevel as { requiresTransparentNav?: boolean } | undefined)?.requiresTransparentNav,
   );
-  let tokenResolveResult: TokenResolveResult | null = null;
+  let tokenResolveResult: AssetResolveResult | null = null;
 
   if (!componentName || !fileName || !fileName.endsWith('.tsx')) {
     return {
@@ -937,17 +941,22 @@ async function handleBuildFromAi(
     const tmpComponent = `/tmp/ai-component-${uniq}.tsx`;
     const tmpManifest  = `/tmp/ai-manifest-${uniq}.json`;
     const tmpApp       = `/tmp/ai-app-${uniq}.tsx`;
+    const tmpAssets    = `/tmp/ai-assets-${uniq}.json`;
 
-    // Image-token substitutie: vervang {{image:role|query}} door concrete
-    // Unsplash/Pexels/picsum-URLs. Gebeurt ná canonical (die tokens accepteert)
-    // en vóór files.write in sandbox — zodat Vite build echte URLs krijgt.
+    // ASSET-MANIFEST RESOLUTIE (post-canonical, byte-exact component-TSX):
+    // 1. Lees manifest.assets (gedeclareerde keys + queries)
+    // 2. Roep media-search voor elke unieke query
+    // 3. Bouw {key: url}-map → resolved-assets.json
+    // Component-code (componentTsx) wordt NIET gewijzigd — dat is de kern
+    // van de security-invariant: wat canonical goedkeurt is exact wat draait.
     const tImg = Date.now();
-    tokenResolveResult = await resolveImageTokens(componentTsx, supabaseUrl, serviceKey);
+    tokenResolveResult = await resolveAssetManifest(manifest, supabaseUrl, serviceKey);
     timings.image_tokens_ms = Date.now() - tImg;
 
     const tWrite = Date.now();
-    await sandbox.files.write(tmpComponent, tokenResolveResult.componentTsx);
+    await sandbox.files.write(tmpComponent, componentTsx);
     await sandbox.files.write(tmpManifest, JSON.stringify(manifest, null, 2));
+    await sandbox.files.write(tmpAssets, JSON.stringify(tokenResolveResult.assets, null, 2));
     // TravelContent-JSON (indien content_source_id gebruikt) landt als
     // /tmp/ai-travel-<uniq>.json en wordt in patch-step naar
     // /home/user/build/src/fixtures/travel.json gecopied.
@@ -957,11 +966,13 @@ async function handleBuildFromAi(
     }
     timings.write_ai_files_ms = Date.now() - tWrite;
 
-    // App.tsx template — build up on Deno-side, write into sandbox
+    // App.tsx template — laadt resolved-assets.json in en geeft door als prop.
+    // Component blijft schoon: reads assets['<key>'] via SectionProps.
     const appTsx = `import { Studio4SiteLayout } from './layout/Studio4SiteLayout';
 import { ${componentName} } from './components/Site/sections/${componentName}';
 import { MOCK_BRAND } from './mocks/brand';
 import { MOCK_PAGE_CONTENT } from './mocks/pageContent';
+import RESOLVED_ASSETS from './resolved-assets.json';
 
 export default function App() {
   return (
@@ -972,6 +983,7 @@ export default function App() {
         secondaryColor={MOCK_BRAND.secondary_color}
         basePath="/"
         pageContent={MOCK_PAGE_CONTENT}
+        assets={RESOLVED_ASSETS as Record<string, string>}
       />
     </Studio4SiteLayout>
   );
@@ -999,6 +1011,7 @@ rm -f /home/user/build/src/components/Site/sections/GeneratedComponent.tsx
 cp ${tmpComponent} /home/user/build/src/components/Site/sections/${fileName}
 cp ${tmpManifest} /home/user/build/src/components/Site/sections/manifest.json
 cp ${tmpApp} /home/user/build/src/App.tsx
+cp ${tmpAssets} /home/user/build/src/resolved-assets.json
 ${tmpTravel ? `cp ${tmpTravel} /home/user/build/src/fixtures/travel.json` : '# no content-source; no travel.json'}
 ls /home/user/build/src/components/Site/sections/`,
         timeoutMs: 15_000,

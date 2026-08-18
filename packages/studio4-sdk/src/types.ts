@@ -70,6 +70,17 @@ export interface SectionProps {
    * `../../lib/sectionStyle`.
    */
   sectionStyle?: unknown;
+  /**
+   * Resolved image-asset-URLs, gemapt op de `assets[].key` uit manifest.json.
+   * Design4-preview/-sandbox levert deze map uit `resolved-assets.json`
+   * (post-canonical gegenereerd door sandbox-build-trigger). TravelBridgeAI-
+   * runtime kan dezelfde vorm leveren uit brand-media of Studio4-gateway.
+   *
+   * Kritiek: component-code die door canonical validator goedgekeurd wordt,
+   * blijft byte-exact. URLs verschijnen ALLEEN via deze prop, nooit door
+   * post-canonical string-manipulatie van de TSX.
+   */
+  assets?: Record<string, string>;
 }
 
 // -----------------------------------------------------------------------------
@@ -130,6 +141,20 @@ export interface Studio4ComponentManifest {
     cutout?: boolean;
     optional?: boolean;
     domainsRequested?: string[];
+  }>;
+
+  /**
+   * Asset-manifest voor image-URLs. Component gebruikt `props.assets['<key>']`;
+   * validator cross-checkt dat elke `assets['x']`-referentie in de TSX een
+   * matchende declaratie hier heeft. Design4-backend genereert een
+   * resolved-assets.json (key→URL) via media-search NA canonical validatie.
+   *
+   * Query = 2-6 zoekwoorden voor beeldbank-lookup ("safari sunset kruger").
+   */
+  assets?: Array<{
+    key: string;
+    query: string;
+    role?: 'hero-bg' | 'card' | 'gallery' | 'inline' | 'background';
   }>;
 
   /** Page-level hints — reviewer-taak om SiteLayout op te zetten. */

@@ -30,7 +30,7 @@ const VALID_MANIFEST: Studio4ComponentManifest = {
     parentCallId: 'acm_test_123',
     sourceReferenceId: 'ref_test_abc',
   },
-  requestedImports: ['react', 'lucide-react', '../../../lib/imageUtils', './types'],
+  requestedImports: ['lucide-react', './types'],
   consumes: {
     brand: ['primary_color', 'name'],
     primaryColor: true,
@@ -38,6 +38,9 @@ const VALID_MANIFEST: Studio4ComponentManifest = {
   },
   media: [
     { role: 'background', kind: 'image', minWidth: 1600 },
+  ],
+  assets: [
+    { key: 'hero-bg', query: 'safari sunset kruger', role: 'hero-bg' },
   ],
   pageLevel: {
     requiresTransparentNav: true,
@@ -56,14 +59,12 @@ const VALID_MANIFEST: Studio4ComponentManifest = {
 
 const VALID_TSX = `
 import { ArrowDown } from 'lucide-react';
-import { imgHeroResponsive } from '../../../lib/imageUtils';
 import type { SectionProps } from './types';
 
-export function HeroSafariSection({ brand, primaryColor, pageContent }: SectionProps) {
-  const bg = imgHeroResponsive('https://foo.supabase.co/storage/v1/object/public/x.jpg');
+export function HeroSafariSection({ brand, primaryColor, pageContent, assets = {} }: SectionProps) {
   return (
     <section className="relative min-h-screen" style={{ backgroundColor: primaryColor }}>
-      <img src={bg.src} srcSet={bg.srcSet} sizes={bg.sizes} alt="" />
+      <img src={assets['hero-bg']} alt="" />
       <h1>{brand.name}</h1>
       <ArrowDown />
     </section>
@@ -263,47 +264,112 @@ const dep = { fetch };
 // -----------------------------------------------------------------------------
 
 describe('validatePackage - image domain whitelist', () => {
+  // TSX-template met een concrete URL als string-literal, om de URL-scan te
+  // testen. Gebruikt assets['hero-bg'] als src (asset-manifest patroon) en
+  // heeft een tweede image met concrete URL om te valideren tegen whitelist.
+  function makeTsxWithUrl(url: string): string {
+    return `
+import { ArrowDown } from 'lucide-react';
+import type { SectionProps } from './types';
+
+export function HeroSafariSection({ brand, primaryColor, pageContent, assets = {} }: SectionProps) {
+  const otherImage = '${url}';
+  return (
+    <section className="relative min-h-screen" style={{ backgroundColor: primaryColor }}>
+      <img src={assets['hero-bg']} alt="" />
+      <img src={otherImage} alt="brand-logo" />
+      <h1>{brand.name}</h1>
+      <ArrowDown />
+    </section>
+  );
+}
+`;
+  }
+
   it('accepteert URLs op whitelisted domeinen (cloudinary)', () => {
-    const tsx = VALID_TSX.replace(
-      'foo.supabase.co/storage/v1/object/public/x.jpg',
-      'res.cloudinary.com/demo/image/upload/sample.jpg',
+    const r = validatePackage(
+      makeFiles({ componentTsx: makeTsxWithUrl('https://res.cloudinary.com/demo/image/upload/sample.jpg') }),
     );
-    const r = validatePackage(makeFiles({ componentTsx: tsx }));
     expect(r.ok).toBe(true);
   });
 
-  it('accepteert subdomeinen van whitelisted hosts', () => {
-    // VALID_TSX gebruikt al foo.supabase.co (subdomein van supabase.co)
-    const r = validatePackage(makeFiles());
+  it('accepteert subdomeinen van whitelisted hosts (supabase)', () => {
+    const r = validatePackage(
+      makeFiles({ componentTsx: makeTsxWithUrl('https://foo.supabase.co/storage/v1/object/public/x.jpg') }),
+    );
     expect(r.ok).toBe(true);
   });
 
   it('wijst URLs op niet-whitelisted domeinen af', () => {
-    const tsx = VALID_TSX.replace(
-      'foo.supabase.co/storage/v1/object/public/x.jpg',
-      'evil.example.com/tracker.gif',
+    const r = validatePackage(
+      makeFiles({ componentTsx: makeTsxWithUrl('https://evil.example.com/tracker.gif') }),
     );
-    const r = validatePackage(makeFiles({ componentTsx: tsx }));
     expect(r.ok).toBe(false);
     expect(r.issues.some((i) => i.rule === 'policy.image-domain-not-allowed')).toBe(true);
   });
 
-  it('wijst images.unsplash.com af — AI moet {{image:role|query}}-tokens gebruiken', () => {
-    const tsx = VALID_TSX.replace(
-      'foo.supabase.co/storage/v1/object/public/x.jpg',
-      'images.unsplash.com/photo-1516426122078-c23e76319801',
+  it('wijst images.unsplash.com af — AI moet assets-manifest gebruiken', () => {
+    const r = validatePackage(
+      makeFiles({ componentTsx: makeTsxWithUrl('https://images.unsplash.com/photo-1516426122078-c23e76319801') }),
     );
-    const r = validatePackage(makeFiles({ componentTsx: tsx }));
     expect(r.ok).toBe(false);
     expect(r.issues.some((i) => i.rule === 'policy.image-domain-not-allowed')).toBe(true);
   });
+});
 
-  it('accepteert {{image:role|query}}-tokens (backend substitueert na validatie)', () => {
-    const tsx = VALID_TSX.replace(
-      "imgHeroResponsive('https://foo.supabase.co/storage/v1/object/public/x.jpg')",
-      "imgHeroResponsive('{{image:hero-bg|safari sunset kruger}}')",
-    );
-    const r = validatePackage(makeFiles({ componentTsx: tsx }));
+// -----------------------------------------------------------------------------
+// Asset-manifest cross-check (nieuw in fase 0)
+// -----------------------------------------------------------------------------
+
+describe('validatePackage - asset-manifest cross-check', () => {
+  it('happy path: assets["hero-bg"] gebruikt + gedeclareerd → ok', () => {
+    const r = validatePackage(makeFiles());
     expect(r.ok).toBe(true);
+  });
+
+  it('wijst af als component assets["foo"] gebruikt maar niet in manifest.assets staat', () => {
+    const tsx = VALID_TSX.replace("assets['hero-bg']", "assets['not-declared']");
+    const r = validatePackage(makeFiles({ componentTsx: tsx }));
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.rule === 'policy.asset-key-not-declared')).toBe(true);
+  });
+
+  it('warning (geen error) als manifest.assets een unused key heeft', () => {
+    const bad = {
+      ...VALID_MANIFEST,
+      assets: [
+        { key: 'hero-bg', query: 'safari sunset kruger', role: 'hero-bg' as const },
+        { key: 'orphan', query: 'unused', role: 'card' as const },
+      ],
+    };
+    const r = validatePackage(makeFiles({ manifestJson: JSON.stringify(bad) }));
+    expect(r.ok).toBe(true);
+    expect(r.warningCount).toBeGreaterThan(0);
+    expect(r.issues.some((i) => i.rule === 'policy.asset-key-unused' && i.message.includes('orphan'))).toBe(true);
+  });
+
+  it('accepteert component zonder assets als manifest ook geen assets heeft', () => {
+    const nakedTsx = `
+import type { SectionProps } from './types';
+export function HeroSafariSection({ brand }: SectionProps) {
+  return <section><h1>{brand.name}</h1></section>;
+}
+`;
+    const nakedManifest = { ...VALID_MANIFEST };
+    delete (nakedManifest as { assets?: unknown }).assets;
+    const r = validatePackage(makeFiles({ componentTsx: nakedTsx, manifestJson: JSON.stringify(nakedManifest) }));
+    expect(r.ok).toBe(true);
+  });
+
+  it('wijst manifest.assets af met dubbele key', () => {
+    const bad = {
+      ...VALID_MANIFEST,
+      assets: [
+        { key: 'hero-bg', query: 'safari one', role: 'hero-bg' as const },
+        { key: 'hero-bg', query: 'safari two', role: 'card' as const },
+      ],
+    };
+    const r = validatePackage(makeFiles({ manifestJson: JSON.stringify(bad) }));
+    expect(r.ok).toBe(false);
   });
 });

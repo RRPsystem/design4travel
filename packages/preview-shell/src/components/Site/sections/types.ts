@@ -43,4 +43,12 @@ export interface SectionProps {
   newsItems?: unknown[];
   advisors?: unknown[];
   sectionStyle?: unknown;
+  /**
+   * Resolved image-URLs per key uit manifest.assets. Design4-sandbox schrijft
+   * hier een resolved-assets.json na canonical validatie; component-code is
+   * dan al goedgekeurd en blijft byte-exact. Als backend geen assets levert:
+   * lege map {} zodat `assets['x']` undefined teruggeeft (component moet
+   * daar defensief mee omgaan).
+   */
+  assets?: Record<string, string>;
 }

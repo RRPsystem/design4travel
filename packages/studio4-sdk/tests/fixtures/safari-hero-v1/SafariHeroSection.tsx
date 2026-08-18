@@ -1,5 +1,4 @@
 import { ArrowDown, Phone } from 'lucide-react';
-import { imgHeroResponsive } from '../../../lib/imageUtils';
 import type { SectionProps } from './types';
 
 /**
@@ -9,26 +8,20 @@ import type { SectionProps } from './types';
  * Gelaagde safari-hero: full-bleed background, transparante nav via SiteLayout,
  * grote titel links-onderaan, CTA + scroll-hint. Voldoet aan POLICY_V1_0:
  * uitsluitend whitelisted imports, geen verboden runtime-globals, images via
- * {{image:role|query}}-tokens (Design4-backend vervangt na validatie), named
- * export met filename-match, SectionProps-signature.
+ * `assets['<key>']`-prop (Design4-backend levert resolved-assets.json na
+ * canonical validatie), named export met filename-match, SectionProps-signature.
  */
 
 interface HeroContent {
   title?: string;
   subtitle?: string;
   ctaLabel?: string;
-  heroImage?: string;
   backgroundText?: string;
 }
 
-// {{image:...}}-token: Design4-backend media-search vervangt dit na validatie
-// door een echte Unsplash/Pexels-URL. Voorkomt broken images door AI-gegokte
-// photo-IDs die niet bestaan.
-const DEFAULT_HERO_IMAGE = '{{image:hero-bg|safari sunset kruger elephants}}';
-
-export function SafariHeroSection({ brand, primaryColor, pageContent }: SectionProps) {
+export function SafariHeroSection({ brand, primaryColor, pageContent, assets = {} }: SectionProps) {
   const hero = (pageContent['hero'] as HeroContent | undefined) ?? {};
-  const bg = imgHeroResponsive(hero.heroImage || DEFAULT_HERO_IMAGE);
+  const bg = assets['hero-bg'] ?? '';
 
   return (
     <section
@@ -36,9 +29,7 @@ export function SafariHeroSection({ brand, primaryColor, pageContent }: SectionP
       style={{ backgroundColor: '#1a0f08' }}
     >
       <img
-        src={bg.src}
-        srcSet={bg.srcSet || undefined}
-        sizes={bg.sizes}
+        src={bg}
         alt=""
         className="absolute inset-0 h-full w-full object-cover"
       />
