@@ -172,3 +172,58 @@ export function applyPatch(doc: DesignDoc, op: PatchOp): DesignDoc {
 export function applyPatches(doc: DesignDoc, ops: PatchOp[]): DesignDoc {
   return ops.reduce((d, op) => applyPatch(d, op), doc);
 }
+
+/**
+ * Uitkomst van een store-level `applyOps`-poging. De chat-laag gebruikt dit
+ * om onderscheid te maken tussen "wijziging doorgevoerd", "was al zo" en
+ * "kon niet worden toegepast" — zodat de succesmelding niet meer los staat
+ * van wat er werkelijk gebeurde.
+ *
+ * `changed: false` betekent expliciet: de patch was structureel geldig maar
+ * produceerde geen inhoudelijke wijziging (bv. dezelfde titel opnieuw
+ * ingesteld). Dit mag nooit een save of nieuwe versie triggeren.
+ */
+export type ApplyResult =
+  | { ok: true; changed: true }
+  | { ok: true; changed: false; reason: 'no-op' }
+  | {
+      ok: false;
+      reason:
+        | 'invalid-patch'
+        | 'unknown-node'
+        | 'unsupported-property'
+        | 'schema-invalid'
+        | 'registry-missing';
+      message: string;
+    };
+
+/**
+ * Diepe gelijkheid tussen twee documenten, met bewuste uitzondering voor
+ * `meta.updatedAt` en `meta.updatedBy` — `applyPatch` bumpt `updatedAt` bij
+ * elke oproep, dus als we dat mee zouden vergelijken zou geen enkele patch
+ * ooit als no-op geclassificeerd worden.
+ */
+export function docsEqualIgnoringMeta(a: DesignDoc, b: DesignDoc): boolean {
+  const stripMeta = (doc: DesignDoc): unknown => {
+    const { meta: _meta, ...rest } = doc;
+    return rest;
+  };
+  return stableStringify(stripMeta(a)) === stableStringify(stripMeta(b));
+}
+
+/**
+ * Deterministische JSON — object-keys gesorteerd, zodat volgorde-verschillen
+ * in property-insertion niet als "verandering" tellen. Alleen bedoeld voor
+ * de no-op-vergelijking; niet een algemene serializer.
+ */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return '[' + value.map(stableStringify).join(',') + ']';
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return (
+    '{' +
+    keys.map((k) => JSON.stringify(k) + ':' + stableStringify(obj[k])).join(',') +
+    '}'
+  );
+}
