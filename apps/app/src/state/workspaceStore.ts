@@ -2,12 +2,15 @@ import { create } from 'zustand';
 import { SCHEMA_VERSION, type DesignDoc } from '@design4/design-doc';
 import { supabase, supabaseAnonKey, supabaseUrl } from '../adapters/supabase/client.js';
 import {
+  attachNodeRegistry,
   attachPersistence,
   attachVersions,
+  detachNodeRegistry,
   detachPersistence,
   detachVersions,
   useDesignDocStore,
 } from './designDocStore.js';
+import { createDefaultRegistry } from '@design4/typed-nodes';
 import { createSupabasePersistenceAdapter } from '../adapters/persistence/supabase.js';
 import { createSupabaseVersionHistoryAdapter } from '../adapters/versions/supabase.js';
 import { ClaudeAIAdapter } from '../adapters/ai/claudeAI.js';
@@ -238,6 +241,11 @@ export const useWorkspaceStore = create<State & Actions>((set, get) => ({
     });
 
     attachVersions(versions);
+    // NodeRegistry vóór persistence — de store gebruikt hem in applyOps voor
+    // property-key-validatie. Zonder registry werkt applyOps nog steeds (met
+    // alleen node-existentie-check), maar dan zou een run door de AI met een
+    // onbekende hero-prop stilletjes gestript worden door de Zod-parse.
+    attachNodeRegistry(createDefaultRegistry());
     // Autosave-gate: attachPersistence als ALLERLAATSTE zodat scheduleSave
     // pas vuurt als alles staat.
     attachPersistence(persistence);
@@ -266,6 +274,7 @@ export const useWorkspaceStore = create<State & Actions>((set, get) => ({
   closeDocument() {
     detachPersistence();
     detachVersions();
+    detachNodeRegistry();
     resetAI();
     // Reset design-doc store to een fresh (leeg) doc zodat er geen stale
     // content zichtbaar is als de user snel navigate't. seedLandingPage()

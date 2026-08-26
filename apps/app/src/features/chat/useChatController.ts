@@ -43,10 +43,28 @@ export function useChatController() {
             useChatStore.getState().liveEvent(evt);
           },
         );
-        if (response.patches.length > 0) {
-          useDesignDocStore.getState().applyOps(response.patches);
+        // Succesmelding hangt aan het WERKELIJKE resultaat van applyOps,
+        // niet aan `response.assistantMessage` — dat is de tekst die het
+        // model wilde tonen maar dat zegt niks over of de patch daadwerkelijk
+        // iets veranderde of überhaupt geldig was.
+        const result =
+          response.patches.length > 0
+            ? useDesignDocStore.getState().applyOps(response.patches)
+            : ({ ok: true, changed: false, reason: 'no-op' } as const);
+
+        if (result.ok && result.changed) {
+          append({ role: 'assistant', text: response.assistantMessage });
+        } else if (result.ok && !result.changed) {
+          append({
+            role: 'assistant',
+            text: 'Dit stond al zo ingesteld, daarom heb ik niets aangepast.',
+          });
+        } else {
+          append({
+            role: 'assistant',
+            text: `Ik kon de wijziging niet uitvoeren: ${result.message}`,
+          });
         }
-        append({ role: 'assistant', text: response.assistantMessage });
       } catch (e) {
         append({ role: 'assistant', text: `Er ging iets mis: ${String(e)}` });
       } finally {
