@@ -30,6 +30,7 @@ export function NewProjectModal({ onClose }: Props) {
   const [projectName, setProjectName] = useState('');
   const [documentTitle, setDocumentTitle] = useState('');
   const [documentType, setDocumentType] = useState<string>('website');
+  const [fixtureSlug, setFixtureSlug] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,10 +44,14 @@ export function NewProjectModal({ onClose }: Props) {
     if (!canSubmit) return;
     setBusy(true);
     setError(null);
+    const trimmedSlug = fixtureSlug.trim();
     const res = await createProjectWithDocument({
       project_name: projectName.trim(),
       first_document_type: documentType,
       first_document_title: documentTitle.trim(),
+      ...(trimmedSlug
+        ? { content_source: { kind: 'fixture' as const, source_id: trimmedSlug } }
+        : {}),
     });
     setBusy(false);
     if (!res.ok) {
@@ -127,6 +132,21 @@ export function NewProjectModal({ onClose }: Props) {
             </div>
           </fieldset>
 
+          <label style={label}>
+            Voorbeeldreis-slug (optioneel)
+            <input
+              type="text"
+              value={fixtureSlug}
+              onChange={(e) => setFixtureSlug(e.target.value)}
+              placeholder="bv. safari-zuid-afrika-mauritius-001"
+              maxLength={200}
+              style={input}
+            />
+            <span style={{ fontSize: 11, color: '#6b7280', fontWeight: 400, marginTop: 2 }}>
+              Laat leeg voor een blanco start. Bij invulling wordt de reis-content opgehaald en gebruikt als eerste ontwerp.
+            </span>
+          </label>
+
           {error ? (
             <div style={{ background: '#fee2e2', color: '#991b1b', padding: 8, borderRadius: 4, fontSize: 12 }}>
               {error}
@@ -159,7 +179,16 @@ function mapError(code: string): string {
       return 'De werkruimte is niet meer actief.';
     case 'no_active_organization':
       return 'Er is geen actieve werkruimte gekoppeld aan je account.';
+    case 'content_source_fixture_not_found':
+      return 'Deze voorbeeldreis-slug bestaat niet. Laat het veld leeg voor een blanco start, of controleer de naam.';
+    case 'content_source_fixture_source_id_required':
+      return 'Voorbeeldreis-slug ontbreekt.';
+    case 'content_source_content_schema_invalid':
+      return 'De voorbeeldreis-data is niet geldig — meld dit als bug.';
     default:
+      if (code.startsWith('content_source_')) {
+        return `De voorbeeldreis kon niet worden opgehaald: ${code.slice('content_source_'.length)}`;
+      }
       return `Er ging iets mis: ${code}`;
   }
 }

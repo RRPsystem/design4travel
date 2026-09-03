@@ -13,6 +13,7 @@
     "@design4/data-bindings": "*",
     "@design4/design-doc": "*",
     "@design4/renderer": "*",
+    "@design4/travel-content": "*",
     "@design4/typed-nodes": "*",
     "@supabase/supabase-js": "^2.109.0",
     "immer": "^10.1.1",
