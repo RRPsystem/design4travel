@@ -338,17 +338,126 @@ function buildDocSummary(docJson: unknown): string {
 }
 
 /**
+ * Bouw een compacte, mens-leesbare samenvatting van de gekoppelde reis-content
+ * (indien aanwezig). Wordt als aparte sectie boven de doc-state gerenderd zodat
+ * AI weet welke bestemmingen/hotels/dagen "bestaan" in de context van dit
+ * ontwerp — nuttig voor instructies als "zet Kruger bovenaan" of "voeg het
+ * hotel in Maun toe".
+ *
+ * Defensief: accepteert `unknown`, retourneert `null` als de content niet
+ * herkenbaar TravelContent-vormig is (bv. bij drift, incompleet loaded, of
+ * geen content_source_id op de doc). Bij `null` wordt de sectie overgeslagen —
+ * backward-compat voor docs zonder gekoppelde reis.
+ */
+function buildTravelContextBlock(travelContent: unknown): string | null {
+  if (!travelContent || typeof travelContent !== "object") return null;
+  const c = travelContent as Record<string, unknown>;
+  const title = typeof c.title === "string" ? c.title : null;
+  if (!title) return null;
+
+  const lines: string[] = [];
+  lines.push(`Titel: ${title}`);
+
+  const subtitle = typeof c.subtitle === "string" ? c.subtitle : null;
+  if (subtitle) lines.push(`Ondertitel: ${subtitle}`);
+
+  const days = typeof c.days === "number" ? c.days : null;
+  const nights = typeof c.nights === "number" ? c.nights : null;
+  if (days !== null) {
+    lines.push(`Duur: ${days} dagen${nights !== null ? ` (${nights} nachten)` : ""}`);
+  }
+
+  const countries = Array.isArray(c.countries) ? c.countries.filter((x): x is string => typeof x === "string") : [];
+  if (countries.length > 0) lines.push(`Land(en): ${countries.join(", ")}`);
+
+  const price = (c.price ?? null) as Record<string, unknown> | null;
+  if (price && typeof price === "object") {
+    const amount = typeof price.amount === "number" ? price.amount : null;
+    const currency = typeof price.currency === "string" ? price.currency : null;
+    const per = typeof price.per === "string" ? price.per : null;
+    if (amount !== null && currency && per) {
+      lines.push(`Prijs vanaf: ${amount} ${currency} per ${per}`);
+    }
+  }
+
+  const intro = typeof c.intro === "string" ? c.intro : null;
+  if (intro) lines.push(`Intro: ${intro}`);
+
+  const destinations = Array.isArray(c.destinations) ? c.destinations : [];
+  if (destinations.length > 0) {
+    const destLines: string[] = [];
+    for (const d of destinations) {
+      if (!d || typeof d !== "object") continue;
+      const dr = d as Record<string, unknown>;
+      const name = typeof dr.name === "string" ? dr.name : null;
+      if (!name) continue;
+      const country = typeof dr.country === "string" ? dr.country : null;
+      const from = typeof dr.from_day === "number" ? dr.from_day : null;
+      const to = typeof dr.to_day === "number" ? dr.to_day : null;
+      const dayRange = from !== null && to !== null ? ` (dag ${from}–${to})` : "";
+      destLines.push(`- ${name}${country ? `, ${country}` : ""}${dayRange}`);
+    }
+    if (destLines.length > 0) {
+      lines.push("");
+      lines.push(`Bestemmingen (${destLines.length}):`);
+      lines.push(...destLines);
+    }
+  }
+
+  const hotels = Array.isArray(c.hotels) ? c.hotels : [];
+  if (hotels.length > 0) {
+    const hotelLines: string[] = [];
+    for (const h of hotels) {
+      if (!h || typeof h !== "object") continue;
+      const hr = h as Record<string, unknown>;
+      const name = typeof hr.name === "string" ? hr.name : null;
+      const city = typeof hr.city === "string" ? hr.city : null;
+      if (!name || !city) continue;
+      const day = typeof hr.day === "number" ? hr.day : null;
+      const nightsH = typeof hr.nights === "number" ? hr.nights : null;
+      const nightsSuffix = nightsH !== null ? ` — ${nightsH}n` : "";
+      const daySuffix = day !== null ? ` (vanaf dag ${day})` : "";
+      hotelLines.push(`- ${city}: ${name}${nightsSuffix}${daySuffix}`);
+    }
+    if (hotelLines.length > 0) {
+      lines.push("");
+      lines.push(`Hotels (${hotelLines.length}):`);
+      lines.push(...hotelLines);
+    }
+  }
+
+  return [
+    "TRAVEL CONTEXT — de reis waarvoor dit ontwerp wordt gemaakt",
+    "",
+    "Gebruik deze context om instructies te interpreteren. Als de user een bestemming,",
+    "hotel of dag noemt: kijk hier of het bestaat vóór je hem gebruikt in het ontwerp.",
+    "Als iets NIET in deze lijst staat: vraag verduidelijking (niet verzinnen).",
+    "Deze context is de bron voor wat er ECHT in de reis zit; het ontwerp-doc hieronder",
+    "is de bron voor wat er ECHT in het huidige design staat.",
+    "",
+    ...lines,
+  ].join("\n");
+}
+
+/**
  * Build the full system prompt from the doc snapshot.
  *
  * Volgorde is bewust:
  *   1. PERSONALITY + policies eerst (stabiel — deel is cache_control-baar).
- *   2. Doc-state ALS LAATSTE, dichtbij de user-prompt in Claude's attention.
+ *   2. TRAVEL CONTEXT (optioneel) — direct vóór doc-state, zodat AI de reis-
+ *      metadata paraat heeft als hij de doc-state leest en de user-vraag
+ *      interpreteert. Alleen aanwezig als een gekoppelde content-bron loaded is.
+ *   3. Doc-state ALS LAATSTE, dichtbij de user-prompt in Claude's attention.
  *      Sonnet 5 verankert zich sterker aan wat er onderaan de system prompt
  *      staat en aan wat de user als laatste zegt; de doc-state daar zetten
  *      + omkaderen met een expliciete "trust dit boven je eigen eerdere
  *      antwoorden" bestrijdt poisoned-history-hallucinatie.
  */
-export function buildSystemPrompt(docJson: unknown, selectedNodeId?: string): string {
+export function buildSystemPrompt(
+  docJson: unknown,
+  selectedNodeId?: string,
+  travelContent?: unknown,
+): string {
   const docSummary = buildDocSummary(docJson);
   const docBlock = `CURRENT DOCUMENT — FULL JSON (matches SUMMARY above):\n\`\`\`json\n${JSON.stringify(docJson, null, 2)}\n\`\`\``;
   const selection = selectedNodeId
@@ -376,6 +485,8 @@ ${selection}
 </authoritative_document_state>
 `.trim();
 
+  const travelBlock = buildTravelContextBlock(travelContent ?? null);
+
   return [
     PERSONALITY,
     "",
@@ -389,6 +500,7 @@ ${selection}
     "",
     DELEGATION_POLICY,
     "",
+    ...(travelBlock ? [travelBlock, ""] : []),
     authoritativeStateBlock,
   ].join("\n");
 }

@@ -36,11 +36,31 @@ const DOC_UUID = "22222222-2222-2222-2222-222222222222";
 const PROJECT_UUID = "33333333-3333-3333-3333-333333333333";
 const ORG_UUID = "44444444-4444-4444-4444-444444444444";
 const USER_UUID = "55555555-5555-5555-5555-555555555555";
+const CONTENT_SOURCE_UUID = "66666666-6666-4666-8666-666666666666";
 
 const OK_DOC = {
   version: "0.1.0",
   project: { documentType: "website", title: "Current" },
   pages: [{ id: "p1", root: { id: "r", type: "layout-column", props: {} } }],
+};
+
+const DOC_WITH_SOURCE = {
+  version: "0.1.0",
+  project: {
+    documentType: "website",
+    title: "Current",
+    contentSourceId: CONTENT_SOURCE_UUID,
+  },
+  pages: [{ id: "p1", root: { id: "r", type: "layout-column", props: {} } }],
+};
+
+const MOCK_TRAVEL_CONTENT = {
+  schema_version: "1.0",
+  title: "Test-reis",
+  days: 7,
+  countries: ["Marokko"],
+  destinations: [{ name: "Marrakech", country: "Marokko" }],
+  meta: { source_kind: "fixture" },
 };
 const OK_BODY = { project_document_id: DOC_UUID, prompt: "maak titel groter" };
 const OK_USER: User = {
@@ -61,12 +81,24 @@ interface Spy {
   anthropicCalls: number;
   metricInserts: Array<Record<string, unknown>>;
   metricInsertShouldFail: boolean;
+  contentSourcesLoadCount: number;
 }
 function newSpy(): Spy {
-  return { anthropicCalls: 0, metricInserts: [], metricInsertShouldFail: false };
+  return {
+    anthropicCalls: 0,
+    metricInserts: [],
+    metricInsertShouldFail: false,
+    contentSourcesLoadCount: 0,
+  };
 }
 
-function makeUserClient(spy: Spy, opts: { docExists?: boolean } = {}) {
+interface UserClientOpts {
+  docExists?: boolean;
+  docHasContentSource?: boolean;
+  contentSourceVisible?: boolean;
+}
+
+function makeUserClient(spy: Spy, opts: UserClientOpts = {}) {
   return (_jwt: string) =>
     ({
       auth: {
@@ -79,10 +111,16 @@ function makeUserClient(spy: Spy, opts: { docExists?: boolean } = {}) {
           maybeSingle: async () => {
             if (table === "project_documents") {
               if (opts.docExists === false) return { data: null, error: null };
-              return { data: { doc: OK_DOC, project_id: PROJECT_UUID }, error: null };
+              const doc = opts.docHasContentSource ? DOC_WITH_SOURCE : OK_DOC;
+              return { data: { doc, project_id: PROJECT_UUID }, error: null };
             }
             if (table === "projects") {
               return { data: { organization_id: ORG_UUID }, error: null };
+            }
+            if (table === "content_sources") {
+              spy.contentSourcesLoadCount += 1;
+              if (opts.contentSourceVisible === false) return { data: null, error: null };
+              return { data: { content: MOCK_TRAVEL_CONTENT }, error: null };
             }
             return { data: null, error: null };
           },
@@ -154,9 +192,22 @@ function failStream(status: number, errorCode: string): AnthropicCallFailure {
   return { ok: false, status, errorCode, latencyMs: 12, requestId: null };
 }
 
-function makeDeps(spy: Spy, script: StreamScript, opts: { docExists?: boolean; apiKey?: string | null } = {}) {
+function makeDeps(
+  spy: Spy,
+  script: StreamScript,
+  opts: {
+    docExists?: boolean;
+    apiKey?: string | null;
+    docHasContentSource?: boolean;
+    contentSourceVisible?: boolean;
+  } = {},
+) {
   return {
-    makeUserClient: makeUserClient(spy, opts.docExists === false ? { docExists: false } : {}),
+    makeUserClient: makeUserClient(spy, {
+      docExists: opts.docExists,
+      docHasContentSource: opts.docHasContentSource,
+      contentSourceVisible: opts.contentSourceVisible,
+    }),
     makeAdmin: makeAdmin(spy),
     getAnthropicApiKey: () => (opts.apiKey === undefined ? "sk-test" : opts.apiKey),
     getOrchestratorModel: () => "claude-sonnet-5",
@@ -408,4 +459,69 @@ Deno.test("metric insert failure NOT fatal — done event still arrives", async 
   const events = await readSSE(res);
   const done = events.find((e) => e.event === "done");
   isTrue(!!done, "done event still arrives despite metric-insert failure");
+});
+
+// -----------------------------------------------------------------------------
+// PR-2: content_sources loading path
+// -----------------------------------------------------------------------------
+
+Deno.test("content_sources NOT queried when doc has no contentSourceId", async () => {
+  const spy = newSpy();
+  const h = makeHandler(
+    makeDeps(spy, {
+      router: okStream([
+        { kind: "text_delta", text: "ok" },
+        { kind: "usage", usage: { input_tokens: 10, output_tokens: 5 } },
+        { kind: "message_stop" },
+      ]),
+    }),
+  );
+  const res = await h(makeReq(OK_BODY));
+  const events = await readSSE(res);
+  isTrue(!!events.find((e) => e.event === "done"), "stream completes");
+  eq(spy.contentSourcesLoadCount, 0);
+});
+
+Deno.test("content_sources queried once when doc has contentSourceId", async () => {
+  const spy = newSpy();
+  const h = makeHandler(
+    makeDeps(
+      spy,
+      {
+        router: okStream([
+          { kind: "text_delta", text: "ok" },
+          { kind: "usage", usage: { input_tokens: 10, output_tokens: 5 } },
+          { kind: "message_stop" },
+        ]),
+      },
+      { docHasContentSource: true },
+    ),
+  );
+  const res = await h(makeReq(OK_BODY));
+  const events = await readSSE(res);
+  isTrue(!!events.find((e) => e.event === "done"), "stream completes");
+  eq(spy.contentSourcesLoadCount, 1);
+});
+
+Deno.test("stream still completes when contentSourceId points to invisible row (fail-safe)", async () => {
+  const spy = newSpy();
+  const h = makeHandler(
+    makeDeps(
+      spy,
+      {
+        router: okStream([
+          { kind: "text_delta", text: "ok" },
+          { kind: "usage", usage: { input_tokens: 10, output_tokens: 5 } },
+          { kind: "message_stop" },
+        ]),
+      },
+      { docHasContentSource: true, contentSourceVisible: false },
+    ),
+  );
+  const res = await h(makeReq(OK_BODY));
+  const events = await readSSE(res);
+  // Fail-safe: geen error event, done arriveert normaal, AI werkt zonder context.
+  isTrue(!events.find((e) => e.event === "error"), "no error emitted");
+  isTrue(!!events.find((e) => e.event === "done"), "done event still arrives");
+  eq(spy.contentSourcesLoadCount, 1);
 });
