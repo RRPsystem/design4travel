@@ -67,6 +67,12 @@ export const ProjectMetaSchema = z.object({
   documentType: DocumentTypeSchema,
   title: z.string(),
   brandId: z.string().optional(),
+  // Pointer naar de content_sources-rij die dit ontwerp voedt (reis-URL,
+  // fixture, of manual). Optioneel — een ontwerp mag zonder bron bestaan.
+  // Bron van waarheid voor de content zelf blijft de content_sources-tabel;
+  // dit is puur een pointer die met het document meereist (dus ook door
+  // versie-rollback).
+  contentSourceId: z.string().uuid().optional(),
 });
 export type ProjectMeta = z.infer<typeof ProjectMetaSchema>;
 

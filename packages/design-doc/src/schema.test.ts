@@ -74,6 +74,37 @@ describe('DesignDocSchema', () => {
     expect(isDesignDoc(doc)).toBe(true);
   });
 
+  it('accepts contentSourceId as a valid UUID on project', () => {
+    const doc = makeDoc({
+      project: {
+        documentType: 'website',
+        title: 'Test',
+        contentSourceId: '11111111-2222-4333-8444-555555555555',
+      },
+    });
+    expect(isDesignDoc(doc)).toBe(true);
+    const parsed = DesignDocSchema.parse(doc);
+    expect(parsed.project.contentSourceId).toBe('11111111-2222-4333-8444-555555555555');
+  });
+
+  it('accepts a doc without contentSourceId (backward-compat)', () => {
+    const doc = makeDoc();
+    expect(isDesignDoc(doc)).toBe(true);
+    const parsed = DesignDocSchema.parse(doc);
+    expect(parsed.project.contentSourceId).toBeUndefined();
+  });
+
+  it('rejects a non-UUID contentSourceId', () => {
+    const bad = makeDoc({
+      project: {
+        documentType: 'website',
+        title: 'Test',
+        contentSourceId: 'not-a-uuid',
+      },
+    });
+    expect(isDesignDoc(bad)).toBe(false);
+  });
+
   it('supports optional per-output overrides on a node', () => {
     const doc = makeDoc({
       pages: [

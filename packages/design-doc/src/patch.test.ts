@@ -210,4 +210,24 @@ describe('applyPatch', () => {
       applyPatch(doc, { kind: 'reorderPages', order: ['ghost'] }),
     ).toThrow(PatchError);
   });
+
+  it('preserves project.contentSourceId across a batch of unrelated patches', () => {
+    const CONTENT_SOURCE_ID = '11111111-2222-4333-8444-555555555555';
+    const doc: DesignDoc = {
+      ...makeDoc(),
+      project: {
+        documentType: 'website',
+        title: 'Test',
+        contentSourceId: CONTENT_SOURCE_ID,
+      },
+    };
+    const next = applyPatches(doc, [
+      { kind: 'setProp', nodeId: 'a', key: 'text', value: 'Aa' },
+      { kind: 'insertNode', parentId: 'root', index: 0, node: { id: 'x', type: 'text', props: { text: 'x' } } },
+      { kind: 'setBrandToken', key: 'primary', value: '#fff' },
+      { kind: 'addPage', page: { id: 'p2', root: { id: 'r2', type: 'layout-column', props: {} } } },
+      { kind: 'renamePage', pageId: 'p2', name: 'Second' },
+    ]);
+    expect(next.project.contentSourceId).toBe(CONTENT_SOURCE_ID);
+  });
 });
