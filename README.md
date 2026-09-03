@@ -2,9 +2,11 @@
 
 > AI-native ontwerp- en ontwikkelomgeving voor reisprofessionals. Chat links, live preview rechts. Maak al pratend websites, offertes, roadbooks, brochures, PDF's, documenten, social-uitingen én herbruikbare componenten.
 
-**Status:** fase 1 werkend. Applicatieshell, chat, live preview, mock-landingspagina, typed ontwerpmodel, losse renderer, localStorage-autosave, undo/redo, elementselectie als chatcontext, 39 tests groen.
+**Status:** v0.1.0 afgesloten (applicatieshell). Sindsdien in main: echte Claude-integratie via Edge Function, streaming chat, Supabase-persistence + magic-link auth, versie-historie + rollback, multi-project backend + frontend, Studio4 Content Gateway v1 (Fase 1a), sandbox-pipeline met canonical validator, image-token pipeline, AI-componentgenerator. **177 tests groen, 22 migraties, 13 Edge Functions.**
 
-**Laatste update:** 2026-08-09.
+**Huidige focus (v0.2):** "Van echte reis naar echt ontwerp" — één blocker open: `contentSourceId` op `DesignDoc` + TravelContent → eerste ontwerp + content-context naar `generate-patch`. Zie [`docs/roadmap.md`](docs/roadmap.md).
+
+**Laatste update:** 2026-09-03.
 
 ---
 
@@ -14,12 +16,12 @@ Design4.travel is een op zichzelf staand product in de 4-familie (naast studio4,
 
 De centrale UX is een gesprek met AI aan de linkerkant en een live preview/canvas aan de rechterkant. Elementen aanklikken in de preview selecteert ze in de chat. De gebruiker hoeft geen HTML, CSS of databinding te kennen.
 
-### Twee modi (Develop nog niet gebouwd)
+### Twee modi
 
 | Mode | Wat | Voor wie | Publiceerbaar? |
 |---|---|---|---|
 | **Compose** | Ontwerpen met goedgekeurde typed nodes (`card`, `image`, `heading`, `text`, `list`, `facilities`, `price`, `layout-row`, `layout-column`, …) + bindings tegen het Studio4-datamodel. | Alle reisagents, zonder codekennis. | Ja, direct naar alle uitvoerformaten. |
-| **Develop** | AI genereert nieuwe React/TypeScript-componenten, draait ze in een sandbox, met build + tests. Component kan na review-gate geregistreerd worden als nieuwe typed node in de bibliotheek. | Power-users, interne curators, designpartners. | Alleen na review — dan wordt de component beschikbaar in Compose mode. |
+| **Develop** | AI genereert nieuwe React/TypeScript-componenten via `generate-studio4-component` + E2B sandbox met build/tests en canonical AST-validator. In main achter admin-flag; publiek pas na review-gate + governance. | Power-users, interne curators, designpartners. | Alleen na review — dan wordt de component beschikbaar in Compose mode. |
 
 Typed JSON blijft in beide modi het standaard opslag- en publicatiemodel. Custom componenten registreren zich als nieuwe node-types met eigen schema.
 
@@ -98,8 +100,9 @@ Nog niet vast — worden bevestigd via POC en designpartner-gesprekken.
 - **State-mutaties:** immer
 - **Tests:** Vitest
 - **Rendering:** eigen renderer-package met inline styles (geen framework-lock-in)
-- **Persistence:** localStorage (Supabase-adapter volgt via dezelfde `PersistenceAdapter`-interface)
-- **AI:** deterministische mock-adapter — geen network, geen API-key. Echte Claude-integratie komt later via een backend-proxy.
+- **Persistence:** `SupabasePersistenceAdapter` (localStorage-adapter beschikbaar als fallback, zelfde interface)
+- **AI:** echte Claude-integratie via Supabase Edge Function `generate-patch` (Sonnet-orchestrator + Opus-delegate), met streaming en anti-hallucination guard rails. Mock-adapter blijft beschikbaar voor tests.
+- **Sandbox:** E2B remote sandbox voor AI-componentgeneratie, met canonical AST-validator als security-gate (`packages/studio4-sdk` + `packages/studio4-preview-host`).
 
 ---
 
@@ -108,12 +111,12 @@ Nog niet vast — worden bevestigd via POC en designpartner-gesprekken.
 Vereist Node 20+ (zie `.nvmrc`).
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/RRPsystem/design4travel.git
 cd Design4Travel
 npm install
 ```
 
-Er is nog geen git-remote — de repo is ook nog niet geïnitialiseerd. Zie `docs/roadmap.md` voor status.
+Live: [`design4travel.netlify.app`](https://design4travel.netlify.app/) (Design4-app) en [`previewdesign4.netlify.app`](https://previewdesign4.netlify.app/) (sandbox-runtime + `validate-package`-Netlify-Function).
 
 ---
 
@@ -152,9 +155,16 @@ Design4Travel/
 │           └── seed/                 # seed mock landing page
 ├── packages/
 │   ├── design-doc/                   # typed JSON schema, patch, undo, PersistenceAdapter
-│   ├── typed-nodes/                  # NodeRegistry + 7 built-in nodes met Zod-schemas
+│   ├── typed-nodes/                  # NodeRegistry + built-in nodes met Zod-schemas
 │   ├── renderer/                     # TargetAdapter + web-renderer + resolveProps
-│   └── data-bindings/                # Studio4-modelmap + mock-data + resolver
+│   ├── data-bindings/                # Studio4-modelmap + mock-data + resolver
+│   ├── travel-content/               # ContentSourceAdapter + Fixture + Studio4-Gateway
+│   ├── studio4-sdk/                  # canonical AST-validator (shared runtime)
+│   └── studio4-preview-host/         # runtime + security-validator (previewdesign4.netlify.app)
+├── supabase/
+│   ├── migrations/                   # 22 migraties (t/m 0022_content_sources.sql)
+│   └── functions/                    # 13 Edge Functions (generate-patch, resolve-content-source,
+│                                     # sandbox-build-trigger, save-document, rollback-document, …)
 ├── docs/
 │   ├── product.md                    # volledige productdefinitie
 │   ├── architecture.md               # lagen, dataflow, uitbreidingspunten
@@ -170,13 +180,12 @@ Design4Travel/
 └── .prettierrc
 ```
 
-**Bewust nog niet aanwezig in fase 1** — gedocumenteerd als uitbreidingspunten in [`docs/architecture.md`](docs/architecture.md):
+**Bewust nog niet aanwezig** — gedocumenteerd als uitbreidingspunten in [`docs/architecture.md`](docs/architecture.md):
 
-- `apps/api/` (auth-handoff, template-publish, webhook-receiver, sandbox-gateway)
+- `apps/api/` (dedicated backend voor toekomstige leveranciers-integraties buiten Studio4 om; auth-handoff loopt vandaag via Supabase Edge Functions)
 - `apps/site/` (marketing-site `design4.travel`)
-- `packages/publish/` (PublishAdapter voor Studio4/Netlify/Git/PDF)
+- `packages/publish/` (PublishAdapter voor Studio4-Template-API/PDF/embed)
 - `packages/auth/` (SessionAdapter, EntitlementAdapter)
-- `supabase/` (schema-migraties, RLS-policies)
 
 ---
 

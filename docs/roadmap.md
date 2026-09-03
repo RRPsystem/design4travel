@@ -2,88 +2,149 @@
 
 Volgorde is een richting, geen commitment. Wordt bijgesteld op basis van designpartner-feedback.
 
-**Laatste update:** 2026-08-10.
+**Laatste update:** 2026-09-03.
 
 ---
 
-## Fase 1 — applicatieshell (klaar, gemarkeerd als v0.1.0)
+## Legenda
 
-Werkende basis, minimum-viable-experience. **v0.1.0 markeert uitsluitend deze fase-1-basis** — het is geen commitment aan een specifieke volgende fase.
+Onderdelen zijn gecategoriseerd op basis van hun **echte** stand, niet alleen "staat in main":
 
-- ✅ Monorepo (npm workspaces) met vier packages + één app
-- ✅ Typed JSON design-doc met project-metadata (`documentType`), pagina's, per-output-overrides, Zod-validatie
-- ✅ Zeven built-in typed nodes (`layout-row`, `layout-column`, `heading`, `text`, `image`, `hero`, `cta`), elk met eigen Zod-schema en bind-slots
-- ✅ Losse renderer-package met `TargetAdapter`-interface; web-target werkend, andere formaten throwen expliciete `NotImplementedError`
-- ✅ Per-node validatie via de eigen Zod-schema tijdens `resolveProps`, inclusief brand-token-substitutie en bind-resolutie
-- ✅ Responsive web-renderer: `clamp()` voor hero-titel, generieke overflow-protectie (`box-sizing`, `overflow-wrap: anywhere`, `min-width: 0`)
-- ✅ Data-bindings tegen mock Studio4-model (drie sample-varianten)
-- ✅ Vite + React app met chat-pane links en preview-iframe rechts
-- ✅ Preview-iframe communiceert via getypeerd postMessage-protocol
-- ✅ Deterministische mock-AI met zes verplichte prompt-patronen (geen network, geen API-key)
-- ✅ Autosave via localStorage-implementatie van centrale `PersistenceAdapter`
-- ✅ Undo/redo op document-niveau
-- ✅ Element-selectie in canvas → zichtbaar als context-chip in de chat
-- ✅ Viewport-toggle (desktop/mobiel) en sample-data-variant-switcher
-- ✅ Build, typecheck, lint (0 warnings) en 49 tests groen
+- ✅ **Gebouwd in main** — code is gemerged in `main`, tests groen
+- 🚀 **Deployed & getest** — draait in productie, handmatig verifieerbaar op live URL
+- 🟡 **Gedeeltelijk** — deels gebouwd; hoofd-pad werkt, maar één of meer expliciete gaps
+- ⬜ **Nog te bouwen** — nog niet in main
+
+Voor de meeste "gebouwd in main"-onderdelen is de deploy-status **nog niet geverifieerd** — dat is een aparte code-versus-live audit (zie [`docs/audit.md`](audit.md), nog te schrijven). Zolang die audit niet is uitgevoerd, betekent ✅ uitdrukkelijk: *bestaat in de codebase*, niet *werkt in productie*.
 
 ---
 
-## Na fase 1 — mogelijke volgende richtingen (nog geen definitieve fasering)
+## v0.1.0 — applicatieshell (afgesloten)
 
-De onderstaande blokken zijn **kandidaat-fasen**, geen vastgelegde volgorde of scope. Welke eerst opgepakt wordt en met welke omvang hangt af van designpartner-signalen, kosten-batenafwegingen en zakelijke prioriteiten. Elke volgende versie krijgt zijn eigen tag (`v0.2.0`, `v0.3.0`, …) op basis van wat daadwerkelijk gebouwd wordt.
+Werkende basis, minimum-viable-experience.
 
-### Kandidaat — echte AI-integratie
+- ✅ Monorepo (npm workspaces) met packages + `apps/app`
+- ✅ Typed JSON design-doc met project-metadata, pagina's, per-output-overrides, Zod-validatie
+- ✅ Built-in typed nodes (layout-row, layout-column, heading, text, image, hero, cta, …), elk met eigen Zod-schema
+- ✅ Renderer-package met `TargetAdapter`-interface; web-target werkend, `pdf`/`image` throwen `NotImplementedError`
+- ✅ Chat-pane links + preview-iframe rechts, getypeerd postMessage-protocol
+- ✅ Deterministische mock-AI met zes prompt-patronen (geen network)
+- ✅ Autosave via localStorage-implementatie van `PersistenceAdapter`
+- ✅ Undo/redo op document-niveau, element-selectie → context-chip in chat
+- ✅ Viewport-toggle + sample-data-variant-switcher
+- ✅ Build + typecheck + 49 tests groen
 
-- Backend-endpoint dat Claude-calls proxy't; **API-key server-side**, nooit in de frontend-bundle
-- Vervanger voor `MockAIAdapter` die dezelfde interface implementeert
-- Design-session state (chat verwerkt huidige document-state, geen from-scratch redesign)
-- Usage-limiet / credit-teller zichtbaar in UI
+---
 
-### Kandidaat — persistente opslag
+## Wat er sinds v0.1.0 is bijgekomen (in main, deploy-status nog te auditen)
 
-- Vervanger voor localStorage-adapter tegen een backend-datastore. Kandidaten: Supabase (gedeeld of apart project), of anders. Niet vastgelegd.
-- RLS-strategie en multi-user-scoping komen met de keuze mee
+### AI & chat
 
-### Kandidaat — auth & SSO
+- ✅ Echte Claude-integratie via Supabase Edge Function `generate-patch` (Sonnet-orchestrator + Opus-delegate)
+- ✅ Streaming chat — live-feed van tool_use + text-delta via Anthropic SSE
+- ✅ Vibe-coding upgrade: multi-turn conversatie + page-ops + proactieve system prompt
+- ✅ Anti-hallucination guard rails (poisoned-history bescherming, expliciete doc-summary, empty-response fallback, future-tense = tool_use dwang)
+- ✅ AI-edit-feedback reflecteert daadwerkelijk toegepaste wijzigingen (PR #4)
 
-- Handoff-endpoint voor eenmalige autorisatiecode vanuit Studio4
-- Entitlement-webhook-ontvanger (subscription-status, credits-limiet, terms-versie)
-- Read-only fallback bij ingetrokken toegang mid-sessie
+### Opslag, auth, versies
 
-### Kandidaat — publish naar Studio4
+- ✅ Supabase-client + magic-link auth gate (PR #3)
+- ✅ `SupabasePersistenceAdapter` en `SupabaseVersionHistoryAdapter` (stuk 2b)
+- ✅ Documentversie-historie + rollback UI (PR #2, PR #1: `rollback-document` Edge Function)
+- ✅ Multi-project + multi-document backend (migraties t/m `0017_create_project_with_first_document.sql`)
+- ✅ Multi-project frontend (router + workspace + dashboard)
+- ✅ AI-call-metrics-tabel (`0013_ai_call_metrics.sql`)
+
+### Studio4 Content Gateway + travel-content
+
+- ✅ `packages/travel-content/` met `FixtureContentSourceAdapter` + `StudioContentGatewayAdapter` + `searchStudioTravels`
+- ✅ `resolve-content-source` Edge Function (fixtures embedded, PostgREST upsert-fix)
+- ✅ Migratie `0022_content_sources.sql` (tabel + RLS)
+- ✅ Studio4 Content Gateway v1 spec (`docs/studio4-content-gateway.md`)
+- ✅ UI-input voor Studio4-reis-URL in Design4
+
+### Sandbox & security
+
+- ✅ `sandbox-build-trigger` + `sandbox-callback` Edge Functions
+- ✅ `generate-studio4-component` Edge Function (AI-componentgenerator)
+- ✅ E2B sandbox-pipeline (prepare/build/capture, elk <150s IDLE_TIMEOUT), 1GB swap-fix voor Chromium
+- ✅ Canonical AST-validator als HTTP-gate (`validate-package` Netlify Function op `previewdesign4.netlify.app`)
+- ✅ Sandbox-runs-tabel + stale-cleanup (`0018_sandbox_runs.sql`, `0020_sandbox_runs_stale_cleanup.sql`)
+
+### Design references & assets
+
+- ✅ Design-references bucket + policies (`0019_design_references_bucket_policies.sql`)
+- ✅ Design-templates (`0021_design_templates.sql`)
+- ✅ `media-search` Edge Function (Unsplash + Pexels + picsum-fallback)
+- ✅ Image-token pipeline met asset-manifest gate (canonical valideert wat sandbox bouwt)
+- ✅ `visual-compare` Edge Function (render-and-compare)
+- ✅ `packages/studio4-preview-host/` — runtime + security-validator (`previewdesign4.netlify.app`)
+- ✅ `packages/studio4-sdk/` (canonical AST-validator + fixture-integratie)
+
+### Design-primitives foundation
+
+- ✅ `BoxStyle` + 6 primitives + capability-ladder (branch merged in main)
+
+**Tests:** 177 passing in 20 files (peildatum 2026-09-03).
+
+---
+
+## 🟡 v0.2 — "Van echte reis naar echt ontwerp" (focus vóór alles anders)
+
+**Doel:** bewijzen dat de kern werkt end-to-end. Studio4/TC-reis → Design4 → automatisch goed eerste ontwerp → gebruiker praat met AI → AI kent de reis → foto's/content kloppen → opslaan → versie terugzetten.
+
+**Concrete gap** (blocker voor v0.2):
+
+- ⬜ **`contentSourceId` in `DesignDocSchema`.** De `travel-content`-package, de `resolve-content-source` Edge Function en migratie `0022_content_sources.sql` staan er, maar het design-document zelf heeft geen veld dat naar zijn content-bron verwijst. Zie `packages/design-doc/src/schema.ts` regels 66-89 — `ProjectMeta` heeft alleen `documentType`, `title`, `brandId`.
+- ⬜ **TravelContent → eerste ontwerp.** Bij het aanmaken van een document uit een reis moet de opgehaalde `TravelContent` het initiële blok-plaatsen voeden (niet alleen een lege mock-page).
+- ⬜ **Content-context naar `generate-patch`.** De AI-Edge-Function moet de resolved TravelContent meekrijgen als context, zodat instructies als "zet het hotel in de tweede nacht bovenaan" begrepen worden.
+- ⬜ **Bron behouden tijdens vervolg-edits.** `contentSourceId` mag niet weglekken bij document-updates.
+- ⬜ **End-to-end proof:** één echte Travel Compositor-reis via Studio4 door de hele flow.
+
+**Voorwaarde vooraf:**
+
+- 🟡 **Code-versus-live audit.** Verifieer welke Edge Functions daadwerkelijk gedeployed zijn, welke secrets ingesteld staan, en of `previewdesign4.netlify.app` + `resolve-content-source` productioneel werken. Zonder dat weten we niet welke ✅ hierboven écht 🚀 is. (Ook: opruimen van artifact-directory `supabase/functions/create-project-document;C/`.)
+
+---
+
+## Kandidaat-fasen na v0.2 (geen vaste volgorde)
+
+Volgorde en scope hangen af van v0.2-uitkomst en designpartner-signaal.
+
+### Publish naar Studio4
 
 - Nieuwe `packages/publish/` met `PublishAdapter`-interface
-- Studio4 Template-API-adapter: publiceer een design als component in de brand-bibliotheek
-- Basis-entitlement-webhooks tussen Studio4 en Design4
+- Studio4 Template-API-adapter (design als component in brand-bibliotheek)
+- Entitlement-webhook-ontvanger (subscription-status, credits-limiet, terms-versie)
 
-### Kandidaat — leveranciers-integratielaag (Studio4-ecosysteem)
-
-Server-side laag in `apps/api` die reisdata uit **Travel Compositor**, **Qenner**, **NextPax** en **interne Studio4-data** normaliseert naar het `Studio4Model` dat design-doc-bindings al gebruiken. Zie [`architecture.md`](architecture.md) → Leveranciers-integratielaag voor de vijf non-negotiable regels (credentials server-side, geen ruwe vendor-responses in frontend, etc.).
-
-### Kandidaat — meer uitvoerformaten
+### Meer uitvoerformaten
 
 - PDF-target (engine-keuze open: Puppeteer / react-pdf / anders)
 - Image-target voor social-formats
 - Per-node component-varianten voor uitvoerformaten die anders renderen
 - Per-target validatie tijdens design, niet pas bij publish
 
-### Kandidaat — bredere Compose-catalogus
+### Bredere Compose-catalogus
 
-Uitbreidingen aan de typed-nodes-bibliotheek, richting complete pagina's en documenten. Volgorde te bepalen op basis van designpartner-feedback. Kandidaat-nodes:
+Uitbreidingen richting complete pagina's en documenten. Volgorde te bepalen op basis van designpartner-feedback. Kandidaat-nodes:
 
-- Dagprogramma-blok (`day.*` shape), activiteit-blok, bestemming-blok
+- Dagprogramma-blok (`day.*`), activiteit-blok, bestemming-blok
 - Prijs/offerteblok met bereken-logica
-- Facilities-blok, gallery, map
+- Facilities, gallery, map
 - Composities (meerdere componenten in één design-doc → volledige secties)
-- Volledige pagina's (layout, header/footer, navigatie) en volledige documenten (offerte-PDF, roadbook-PDF, brochure)
+- Volledige pagina's (header/footer/navigatie) en volledige documenten (offerte-PDF, roadbook-PDF, brochure)
 - Marketing-uitingen (social-formats, e-mailtemplates)
-- Complete thema's (design-tokens die door alle blokken doorwerken)
+- Complete thema's
 
-### Kandidaat — Develop mode (AI-codegeneratie)
+### Leveranciers-integratielaag uitbreiden
 
-Sandbox voor AI-gegenereerde React/TS-componenten. Vereist eerst technologie-keuze (WebContainer / Sandpack / iframe+CSP+worker), sandboxed preview, build + tests binnen sandbox, en een review-gate voor promotie naar `NodeDefinition` met `source: 'custom'`.
+Server-side laag in `apps/api` (nog niet gebouwd) die reisdata uit **Travel Compositor**, **Qenner**, **NextPax** normaliseert naar het `Studio4Model`. Vandaag loopt dit deels via Studio4 zelf als upstream; als Design4 direct met bronnen wil praten komt hier de scheiding.
 
-### Kandidaat — governance & schaalslagen
+### Develop mode publiek
+
+Vandaag: `generate-studio4-component` + sandbox-pipeline werken achter admin-flag. Publieke beschikbaarheid vereist review-gate voor promotie naar `NodeDefinition` met `source: 'custom'`, en governance-model.
+
+### Governance & schaalslagen
 
 - Governance-laag (approval, gedeelde brand-library, netwerk-templates voor TravelXL/franchise)
 - Tool-use AI-pattern (`get_schema`, `preview_with_sample_data`, `register_component`) ter vervanging van statische injectie
