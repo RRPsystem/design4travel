@@ -16,6 +16,8 @@ import { createSupabaseVersionHistoryAdapter } from '../adapters/versions/supaba
 import { ClaudeAIAdapter } from '../adapters/ai/claudeAI.js';
 import { attachAI, resetAI } from '../adapters/ai/registry.js';
 import { seedLandingPage } from '../seed/mockLandingPage.js';
+import { seedFromTravelContent } from '../features/workspace/seedFromTravelContent.js';
+import { resolveContentSource } from '../adapters/persistence/contentSourceApi.js';
 import {
   archiveProject,
   createDocumentInProject,
@@ -102,6 +104,15 @@ type Actions = {
     project_description?: string | null;
     first_document_type: string;
     first_document_title: string;
+    /**
+     * Optioneel: koppel een content-bron aan het nieuwe document. Wordt eerst
+     * resolved via `resolve-content-source`; bij succes bouwt de store een
+     * deterministische seed-page uit de TravelContent (zie
+     * seedFromTravelContent) en zet `project.contentSourceId` in de doc. Bij
+     * fout krijgt de user een error-code terug en wordt het project NIET
+     * aangemaakt (fail-early).
+     */
+    content_source?: { kind: 'fixture'; source_id: string };
   }): Promise<ApiResult<{ project_id: string; project_document_id: string }>>;
   createDocumentInProject(input: {
     project_id: string;
@@ -290,7 +301,25 @@ export const useWorkspaceStore = create<State & Actions>((set, get) => ({
   async createProjectWithDocument(input) {
     const orgId = get().activeOrgId;
     if (!orgId) return { ok: false, error: 'no_active_organization' };
-    const seed = seedForType(input.first_document_type);
+
+    // Optioneel: content-source resolven vóór create. Fail-early — als de
+    // bron ongeldig is willen we geen half-gekoppeld project achterlaten.
+    let seed: DesignDoc;
+    if (input.content_source) {
+      const resolved = await resolveContentSource(supabase, input.content_source);
+      if (!resolved.ok) {
+        return { ok: false, error: `content_source_${resolved.error}` };
+      }
+      seed = seedFromTravelContent({
+        travel: resolved.content,
+        contentSourceId: resolved.contentSourceId,
+        documentType: input.first_document_type as DesignDoc['project']['documentType'],
+        documentTitle: input.first_document_title,
+      });
+    } else {
+      seed = seedForType(input.first_document_type);
+    }
+
     const res = await createProjectWithFirstDocument(supabase, {
       organization_id: orgId,
       project_name: input.project_name,
