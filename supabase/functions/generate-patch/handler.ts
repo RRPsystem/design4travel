@@ -476,8 +476,49 @@ export function makeHandler(deps: HandlerDeps) {
       return jsonResponse({ error: "internal_error" }, 500);
     }
 
+    // ---------- Optional: load linked travel-content ------------------------
+    // Als de doc een contentSourceId heeft, laad de bijbehorende content_sources-
+    // rij onder de user's JWT (RLS afdwingt owner-only access). Wordt in de
+    // system prompt geïnjecteerd als TRAVEL CONTEXT. Faalt fail-safe: elke
+    // fout resulteert in `travelContent = null` en AI werkt zonder reis-context
+    // (backward-compat voor docs zonder gekoppelde bron).
+    let travelContent: unknown = null;
+    try {
+      const docObj = (docRow.doc ?? null) as Record<string, unknown> | null;
+      const project = docObj && typeof docObj === "object"
+        ? (docObj.project as Record<string, unknown> | undefined)
+        : undefined;
+      const contentSourceId = project && typeof project.contentSourceId === "string"
+        ? project.contentSourceId
+        : null;
+      if (contentSourceId) {
+        const { data, error } = await userClient
+          .from("content_sources")
+          .select("content")
+          .eq("id", contentSourceId)
+          .maybeSingle();
+        if (error) {
+          console.warn(
+            "[generate-patch] content_sources load failed:",
+            error.message,
+            "code=",
+            (error as { code?: string }).code,
+          );
+        } else if (data) {
+          travelContent = (data as { content: unknown }).content;
+        } else {
+          console.warn(
+            "[generate-patch] content_sources not visible under RLS for id=",
+            contentSourceId,
+          );
+        }
+      }
+    } catch (e) {
+      console.warn("[generate-patch] content_sources load threw:", e);
+    }
+
     // ---------- Streaming response ------------------------------------------
-    const systemPrompt = buildSystemPrompt(docRow.doc, input.selected_node_id);
+    const systemPrompt = buildSystemPrompt(docRow.doc, input.selected_node_id, travelContent);
     const orchestratorModel = deps.getOrchestratorModel() || DEFAULT_ORCHESTRATOR;
     const specialistModel = deps.getSpecialistModel() || DEFAULT_SPECIALIST;
     const betaHeaders = deps.getBetaHeaders() ?? undefined;
