@@ -1,10 +1,11 @@
 import { z } from 'zod';
 import type { NodeDefinition } from '../types.js';
+import { TextAlignSchema } from '../style/align.js';
 
 export const HeadingPropsSchema = z.object({
   text: z.string().default('Kop'),
   level: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).default(2),
-  align: z.enum(['left', 'center', 'right']).default('left'),
+  align: TextAlignSchema.default('left'),
   color: z.string().optional(),
   fontSize: z.number().min(8).max(200).optional(),
 });
