@@ -428,8 +428,17 @@ export type ClientStreamEvent =
   | { kind: "text_delta"; text: string }
   /** Nieuwe tool_use-call gestart bij Anthropic. Naam bekend, args nog niet volledig. */
   | { kind: "tool_start"; index: number; tool: string }
-  /** Tool_use-call volledig binnen. Summary is een korte NL-omschrijving. */
-  | { kind: "tool_complete"; index: number; tool: string; summary: string }
+  /**
+   * Tool_use-call volledig binnen. Summary is een korte NL-omschrijving.
+   *
+   * `patch` bevat de gedecodeerde PatchOp als deze tool_use direct naar een
+   * doc-mutatie mapt (set_prop, insert_node, add_page, etc.). Voor
+   * `delegate_to_opus` en onbekende/ongeldige tool-calls is `patch = null`.
+   * Bedoeld voor client-side live-preview: applyStreamOp per event i.p.v.
+   * één batch aan het eind. Terminaal `done`-event bevat nog steeds de
+   * volledige `patches`-array voor dedup + undo-summary.
+   */
+  | { kind: "tool_complete"; index: number; tool: string; summary: string; patch: PatchOp | null }
   /**
    * Router-model heeft delegate_to_opus geëmit'ed en de Edge Function gaat
    * nu Opus starten. Client kan een visuele transitie tonen.

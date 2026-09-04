@@ -258,19 +258,26 @@ async function consumeAnthropicStream(
         // Bewust NIET geëmit'd naar de client — te granulair voor de UI.
         // Client krijgt tool_complete zodra de volledige JSON binnen is.
         break;
-      case "tool_complete":
+      case "tool_complete": {
         acc.toolCalls.push({ index: evt.index, name: evt.name, input: evt.input });
+        // Bereken de patch nu al zodat de client 'm live kan applyen
+        // (live-preview-during-stream). delegate_to_opus + onbekende/
+        // ongeldige tool-calls → patch = null; client slaat die dan over.
+        const conv = toolCallToPatch(evt.name, evt.input);
+        const patch = conv.kind === "patch" ? conv.op : null;
         emit({
           kind: "tool_complete",
           index: evt.index,
           tool: evt.name,
           summary: summarizeToolCall(evt.name, evt.input),
+          patch,
         });
         if (detectDelegate && evt.name === "delegate_to_opus") {
           const d = isDelegateInput(evt.input);
           if (d) acc.delegate = d;
         }
         break;
+      }
       case "usage":
         // Merge — laatste usage-event uit message_delta bevat totaal.
         acc.usage = { ...acc.usage, ...evt.usage };
