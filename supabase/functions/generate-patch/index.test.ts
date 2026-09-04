@@ -525,3 +525,104 @@ Deno.test("stream still completes when contentSourceId points to invisible row (
   isTrue(!!events.find((e) => e.event === "done"), "done event still arrives");
   eq(spy.contentSourcesLoadCount, 1);
 });
+
+// -----------------------------------------------------------------------------
+// PR-1 (live-preview): tool_complete carries `patch` field for known tools
+// -----------------------------------------------------------------------------
+
+Deno.test("tool_complete for known tool carries populated `patch` field", async () => {
+  const spy = newSpy();
+  const h = makeHandler(
+    makeDeps(spy, {
+      router: okStream([
+        { kind: "tool_start", index: 0, id: "tu1", name: "set_prop" },
+        {
+          kind: "tool_complete",
+          index: 0,
+          id: "tu1",
+          name: "set_prop",
+          input: { nodeId: "hero", key: "titleFontSize", value: 66 },
+        },
+        { kind: "usage", usage: { input_tokens: 10, output_tokens: 5 } },
+        { kind: "message_stop" },
+      ]),
+    }),
+  );
+  const res = await h(makeReq(OK_BODY));
+  const events = await readSSE(res);
+  const tc = events.find(
+    (e) => e.event === "activity" && (e.data as { kind: string }).kind === "tool_complete",
+  );
+  isTrue(!!tc, "tool_complete event emitted");
+  const data = tc!.data as { patch: { kind: string; nodeId: string; key: string; value: unknown } | null };
+  isTrue(data.patch !== null, "patch should be present for known tool");
+  eq(data.patch!.kind, "setProp");
+  eq(data.patch!.nodeId, "hero");
+  eq(data.patch!.key, "titleFontSize");
+  eq(data.patch!.value, 66);
+});
+
+Deno.test("tool_complete for delegate_to_opus carries `patch: null`", async () => {
+  const spy = newSpy();
+  const h = makeHandler(
+    makeDeps(spy, {
+      router: okStream([
+        { kind: "tool_start", index: 0, id: "tu_del", name: "delegate_to_opus" },
+        {
+          kind: "tool_complete",
+          index: 0,
+          id: "tu_del",
+          name: "delegate_to_opus",
+          input: { enriched_prompt: "bouw een pagina X", rationale: "grote scope" },
+        },
+        { kind: "usage", usage: { input_tokens: 10, output_tokens: 5 } },
+        { kind: "message_stop" },
+      ]),
+      // Zonder specialist-script zou de handler crashen zodra hij delegate detecteert;
+      // we voegen een minimal specialist-stream toe die niets doet.
+      specialist: okStream([
+        { kind: "usage", usage: { input_tokens: 5, output_tokens: 5 } },
+        { kind: "message_stop" },
+      ]),
+    }),
+  );
+  const res = await h(makeReq(OK_BODY));
+  const events = await readSSE(res);
+  const tc = events.find(
+    (e) =>
+      e.event === "activity" &&
+      (e.data as { kind: string; tool?: string }).kind === "tool_complete" &&
+      (e.data as { tool?: string }).tool === "delegate_to_opus",
+  );
+  isTrue(!!tc, "tool_complete event emitted for delegate");
+  const data = tc!.data as { patch: unknown };
+  eq(data.patch, null);
+});
+
+Deno.test("tool_complete for tool with invalid input carries `patch: null`", async () => {
+  const spy = newSpy();
+  const h = makeHandler(
+    makeDeps(spy, {
+      router: okStream([
+        { kind: "tool_start", index: 0, id: "tu1", name: "set_prop" },
+        {
+          kind: "tool_complete",
+          index: 0,
+          id: "tu1",
+          name: "set_prop",
+          input: { /* mist required nodeId/key/value */ } as Record<string, unknown>,
+        },
+        { kind: "usage", usage: { input_tokens: 10, output_tokens: 5 } },
+        { kind: "message_stop" },
+      ]),
+    }),
+  );
+  const res = await h(makeReq(OK_BODY));
+  const events = await readSSE(res);
+  const tc = events.find(
+    (e) => e.event === "activity" && (e.data as { kind: string }).kind === "tool_complete",
+  );
+  isTrue(!!tc, "tool_complete event still emitted");
+  const data = tc!.data as { patch: unknown };
+  eq(data.patch, null);
+});
