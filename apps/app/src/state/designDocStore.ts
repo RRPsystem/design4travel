@@ -59,6 +59,27 @@ type Actions = {
   previewVersion(v: VersionSnapshot): void;
   stopPreviewingVersion(): void;
   restoreVersion(v: VersionSnapshot): Promise<RollbackResult>;
+
+  /**
+   * Streaming-transactie voor live-preview tijdens AI-streams.
+   *
+   * Gebruik: `beginStream()` vóór stream-start; `applyStreamOp(op)` bij elk
+   * inkomend tool_complete-event met een patch; `commitStream()` bij stream-
+   * eind (succes) OF `rollbackStream()` bij stream-error.
+   *
+   * Verschil met `applyOps`: elke `applyStreamOp` muteert de doc DIRECT
+   * (preview updated live via subscription), maar pusht GEEN undo-snapshot
+   * en triggert GEEN scheduleSave. `commitStream()` doet dat één keer voor
+   * de hele turn — één undo-eenheid per stream, één save. `rollbackStream()`
+   * herstelt naar de baseline-doc uit `beginStream()`.
+   *
+   * Zonder voorafgaande `beginStream()` zijn `applyStreamOp`/`commitStream`/
+   * `rollbackStream` no-ops (fail-safe voor stray callbacks).
+   */
+  beginStream(): void;
+  applyStreamOp(op: PatchOp): ApplyResult;
+  commitStream(): { changed: boolean };
+  rollbackStream(): void;
 };
 
 let persistence: PersistenceAdapter | null = null;
@@ -66,6 +87,14 @@ let versionsAdapter: VersionHistoryAdapter | null = null;
 let versionSink: ((doc: DesignDoc) => VersionSummary) | null = null;
 let nodeRegistry: NodeRegistry | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * Baseline-doc voor de actieve streaming-transactie. `null` = geen actieve
+ * stream. Gezet door `beginStream()`, hersteld naar de doc bij `rollbackStream()`,
+ * gebruikt voor de undo-snapshot bij `commitStream()`. Module-level (net als
+ * `saveTimer`) omdat het transient control-plane state is die niets in de
+ * Zustand-store hoort te lekken.
+ */
+let streamBaseline: DesignDoc | null = null;
 
 /**
  * Hangt de NodeRegistry aan de store. Verplicht in productie: `applyOps`
@@ -457,6 +486,93 @@ export const useDesignDocStore = create<State & Actions>((set, get) => ({
     return { ok: true, changed: true };
   },
 
+  beginStream() {
+    // Re-entry: als er al een baseline hangt (bv. vorige stream is nooit
+    // netjes gecommit/rollback'd) — reset expliciet. Anders zou een tweede
+    // stream de eerste baseline weggooien zonder waarschuwing. Log het wel.
+    if (streamBaseline !== null) {
+      console.warn('[designDocStore] beginStream called while a previous stream was still active — discarding previous baseline');
+    }
+    streamBaseline = get().doc;
+  },
+
+  applyStreamOp(op): ApplyResult {
+    const state = get();
+    if (!state.doc?.id) {
+      return { ok: false, reason: 'invalid-patch', message: 'Geen actief document.' };
+    }
+    // Fail-safe: zonder actieve stream is dit een no-op. Voorkomt dat een
+    // stray callback na commit/rollback alsnog muteert.
+    if (streamBaseline === null) {
+      return { ok: true, changed: false, reason: 'no-op' };
+    }
+    if (!nodeRegistry) {
+      const message =
+        'Interne configuratiefout: node-registry ontbreekt, wijziging kan niet worden gevalideerd.';
+      return { ok: false, reason: 'registry-missing', message };
+    }
+
+    // Zelfde prevalidatie als applyOps, maar voor één op tegen de huidige
+    // (al mogelijk mid-stream-mutated) doc. Faalt de validatie → geen mutatie,
+    // caller mag de rest van de stream gewoon door laten lopen.
+    const validation = validateAndBuildCandidate(state.doc, [op], nodeRegistry);
+    if (!validation.ok) {
+      return validation;
+    }
+    const parsed = DesignDocSchema.safeParse(validation.candidate);
+    if (!parsed.success) {
+      const message = `Patch produceerde ongeldig document: ${parsed.error.issues[0]?.message ?? 'onbekend'}`;
+      return { ok: false, reason: 'schema-invalid', message };
+    }
+    const parsedDoc = parsed.data as DesignDoc;
+
+    if (docsEqualIgnoringMeta(state.doc, parsedDoc)) {
+      return { ok: true, changed: false, reason: 'no-op' };
+    }
+
+    // GEEN pushSnapshot, GEEN scheduleSave — dat is de hele reden van deze
+    // methode. Undo + save vindt plaats in commitStream, één keer per turn.
+    // previewingVersion wél sluiten (mid-stream mutatie beëindigt preview-mode).
+    set({ doc: parsedDoc, previewingVersion: null });
+    return { ok: true, changed: true };
+  },
+
+  commitStream() {
+    if (streamBaseline === null) {
+      return { changed: false };
+    }
+    const state = get();
+    const baseline = streamBaseline;
+    streamBaseline = null;
+
+    // Vergelijk baseline vs. huidige doc: als niks is toegepast, geen undo-
+    // entry aanmaken en geen save triggeren (voorkomt lege undo-stappen).
+    if (docsEqualIgnoringMeta(baseline, state.doc)) {
+      return { changed: false };
+    }
+
+    // Push ÉÉN undo-snapshot met baseline als before-state — één undo-klik
+    // rolt de hele stream-turn terug. Dan één scheduleSave voor het eind-doc.
+    const paused = state.saveState === 'lock-conflict';
+    set({
+      stack: pushSnapshot(state.stack, baseline),
+      saveState: paused ? 'lock-conflict' : 'idle',
+      lastError: paused ? state.lastError : undefined,
+    });
+    scheduleSave(state.doc, (s) => set(s));
+    return { changed: true };
+  },
+
+  rollbackStream() {
+    if (streamBaseline === null) return;
+    const baseline = streamBaseline;
+    streamBaseline = null;
+    // Herstel doc naar pre-stream-state. GEEN scheduleSave — backend heeft
+    // baseline al (er is niks tijdens de stream gepersist), dus lokaal +
+    // backend zijn nu weer consistent.
+    set({ doc: baseline, previewingVersion: null });
+  },
+
   select(nodeId) {
     set({ selectedNodeId: nodeId });
   },
@@ -486,6 +602,10 @@ export const useDesignDocStore = create<State & Actions>((set, get) => ({
   },
 
   reset(seed) {
+    // Safety: als er nog een streaming-baseline hangt (bv. user opent een
+    // ander document mid-stream), gooi 'm weg — de baseline hoort bij het
+    // oude doc en zou een cross-doc rollback veroorzaken.
+    streamBaseline = null;
     set({
       doc: seed,
       stack: emptyStack(),

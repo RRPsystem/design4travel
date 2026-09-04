@@ -630,3 +630,180 @@ describe('designDocStore.applyOps — succesbepaling op basis van werkelijke doc
     expect(saveSpy).not.toHaveBeenCalled();
   });
 });
+
+// -----------------------------------------------------------------------------
+// PR-2 (live-preview): streaming-transactie-API
+// -----------------------------------------------------------------------------
+
+describe('designDocStore — streaming-transactie (live-preview)', () => {
+  beforeEach(() => {
+    detachNodeRegistry();
+    useDesignDocStore.getState().reset(seedLandingPage());
+  });
+
+  it('happy path: begin → 2 applyStreamOps → commit produceert 1 undo-eenheid + 1 save', async () => {
+    const saveSpy = vi.fn(async () => {});
+    attachPersistence({ async load() { return null; }, save: saveSpy, async delete() {} });
+    attachNodeRegistry(createDefaultRegistry());
+    useDesignDocStore.getState().reset(seedLandingPage());
+
+    const before = useDesignDocStore.getState().doc;
+    const stackDepthBefore = useDesignDocStore.getState().stack.past.length;
+
+    useDesignDocStore.getState().beginStream();
+    const r1 = useDesignDocStore.getState().applyStreamOp({
+      kind: 'setProp', nodeId: 'section-a-title', key: 'text', value: 'Live-1',
+    });
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    expect(r1.changed).toBe(true);
+
+    // Doc is DIRECT gemuteerd — preview zou het al zien.
+    expect(useDesignDocStore.getState().doc).not.toBe(before);
+    // Maar geen undo-entry en geen save-scheduling.
+    expect(useDesignDocStore.getState().stack.past.length).toBe(stackDepthBefore);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(saveSpy).not.toHaveBeenCalled();
+
+    const r2 = useDesignDocStore.getState().applyStreamOp({
+      kind: 'setProp', nodeId: 'section-b-title', key: 'text', value: 'Live-2',
+    });
+    expect(r2.ok).toBe(true);
+
+    // Commit — nu wél één undo-entry en één save.
+    const commit = useDesignDocStore.getState().commitStream();
+    expect(commit.changed).toBe(true);
+    expect(useDesignDocStore.getState().stack.past.length).toBe(stackDepthBefore + 1);
+
+    await new Promise((r) => setTimeout(r, 400));
+    expect(saveSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('undo na streaming turn brengt hele turn terug in één klik', async () => {
+    attachPersistence(noopPersistence());
+    attachNodeRegistry(createDefaultRegistry());
+    useDesignDocStore.getState().reset(seedLandingPage());
+    const originalText = 'Reizen op maat';
+
+    useDesignDocStore.getState().beginStream();
+    useDesignDocStore.getState().applyStreamOp({
+      kind: 'setProp', nodeId: 'section-a-title', key: 'text', value: 'Tussenstap',
+    });
+    useDesignDocStore.getState().applyStreamOp({
+      kind: 'setProp', nodeId: 'section-a-title', key: 'text', value: 'Eindresultaat',
+    });
+    useDesignDocStore.getState().commitStream();
+
+    // Verifieer eind-state.
+    const findNode = (doc: DesignDoc, id: string) => {
+      const stack = [doc.pages[0]!.root];
+      while (stack.length) {
+        const n = stack.pop()!;
+        if (n.id === id) return n;
+        if (n.children) stack.push(...n.children);
+      }
+      return null;
+    };
+    expect(findNode(useDesignDocStore.getState().doc, 'section-a-title')!.props.text).toBe('Eindresultaat');
+
+    // Één undo → terug naar de originele tekst (niet naar 'Tussenstap'!).
+    const undone = useDesignDocStore.getState().undo();
+    expect(undone).toBe(true);
+    expect(findNode(useDesignDocStore.getState().doc, 'section-a-title')!.props.text).toBe(originalText);
+  });
+
+  it('rollback herstelt naar baseline, geen undo-entry, geen save', async () => {
+    const saveSpy = vi.fn(async () => {});
+    attachPersistence({ async load() { return null; }, save: saveSpy, async delete() {} });
+    attachNodeRegistry(createDefaultRegistry());
+    useDesignDocStore.getState().reset(seedLandingPage());
+
+    const before = useDesignDocStore.getState().doc;
+    const stackDepthBefore = useDesignDocStore.getState().stack.past.length;
+
+    useDesignDocStore.getState().beginStream();
+    useDesignDocStore.getState().applyStreamOp({
+      kind: 'setProp', nodeId: 'section-a-title', key: 'text', value: 'Half-applied',
+    });
+    // Doc IS gemuteerd.
+    expect(useDesignDocStore.getState().doc).not.toBe(before);
+
+    useDesignDocStore.getState().rollbackStream();
+    // Doc terug naar baseline.
+    expect(useDesignDocStore.getState().doc).toBe(before);
+    // Geen undo-entry aangemaakt.
+    expect(useDesignDocStore.getState().stack.past.length).toBe(stackDepthBefore);
+    // Geen save.
+    await new Promise((r) => setTimeout(r, 400));
+    expect(saveSpy).not.toHaveBeenCalled();
+  });
+
+  it('commit zonder mutaties → geen undo-entry, geen save', async () => {
+    const saveSpy = vi.fn(async () => {});
+    attachPersistence({ async load() { return null; }, save: saveSpy, async delete() {} });
+    attachNodeRegistry(createDefaultRegistry());
+    useDesignDocStore.getState().reset(seedLandingPage());
+    const stackDepthBefore = useDesignDocStore.getState().stack.past.length;
+
+    useDesignDocStore.getState().beginStream();
+    const commit = useDesignDocStore.getState().commitStream();
+    expect(commit.changed).toBe(false);
+    expect(useDesignDocStore.getState().stack.past.length).toBe(stackDepthBefore);
+    await new Promise((r) => setTimeout(r, 400));
+    expect(saveSpy).not.toHaveBeenCalled();
+  });
+
+  it('ongeldige stream-op faalt individueel, latere ops kunnen wél door', async () => {
+    attachPersistence(noopPersistence());
+    attachNodeRegistry(createDefaultRegistry());
+    useDesignDocStore.getState().reset(seedLandingPage());
+
+    useDesignDocStore.getState().beginStream();
+    // Bad op: nodeId bestaat niet.
+    const bad = useDesignDocStore.getState().applyStreamOp({
+      kind: 'setProp', nodeId: 'ghost-node', key: 'text', value: 'X',
+    });
+    expect(bad.ok).toBe(false);
+    // Goede op erna: moet werken.
+    const good = useDesignDocStore.getState().applyStreamOp({
+      kind: 'setProp', nodeId: 'section-a-title', key: 'text', value: 'Werkt-toch',
+    });
+    expect(good.ok).toBe(true);
+    if (!good.ok) return;
+    expect(good.changed).toBe(true);
+    useDesignDocStore.getState().commitStream();
+  });
+
+  it('applyStreamOp zonder voorafgaande beginStream = no-op (fail-safe)', async () => {
+    attachPersistence(noopPersistence());
+    attachNodeRegistry(createDefaultRegistry());
+    useDesignDocStore.getState().reset(seedLandingPage());
+    const before = useDesignDocStore.getState().doc;
+
+    const res = useDesignDocStore.getState().applyStreamOp({
+      kind: 'setProp', nodeId: 'section-a-title', key: 'text', value: 'Stray',
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.changed).toBe(false);
+    // Doc onveranderd.
+    expect(useDesignDocStore.getState().doc).toBe(before);
+  });
+
+  it('reset() mid-stream gooit baseline weg (cross-doc safety)', async () => {
+    attachPersistence(noopPersistence());
+    attachNodeRegistry(createDefaultRegistry());
+    useDesignDocStore.getState().reset(seedLandingPage());
+
+    useDesignDocStore.getState().beginStream();
+    useDesignDocStore.getState().applyStreamOp({
+      kind: 'setProp', nodeId: 'section-a-title', key: 'text', value: 'Mid-stream',
+    });
+    // Reset naar een nieuw doc — baseline mag NIET terugkomen via rollbackStream.
+    const newDoc: DesignDoc = { ...seedLandingPage(), id: 'nieuw-doc' };
+    useDesignDocStore.getState().reset(newDoc);
+    // Rollback moet no-op zijn (baseline hoort bij oude doc, is opgeruimd).
+    useDesignDocStore.getState().rollbackStream();
+    expect(useDesignDocStore.getState().doc.id).toBe('nieuw-doc');
+  });
+});
