@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import type { NodeDefinition } from '../types.js';
+import { TextAlignSchema } from '../style/align.js';
 
 export const TextPropsSchema = z.object({
   text: z.string().default('Tekst'),
-  align: z.enum(['left', 'center', 'right']).default('left'),
+  align: TextAlignSchema.default('left'),
   color: z.string().optional(),
   fontSize: z.number().min(8).max(120).optional(),
 });

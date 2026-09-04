@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { NodeDefinition } from '../types.js';
 import { BoxStyleSchema, ColorValueSchema } from '../style/boxStyle.js';
+import { TextAlignSchema } from '../style/align.js';
 
 /**
  * Hero — prominente header met achtergrondafbeelding, titel, subtitle en
@@ -30,7 +31,7 @@ export const HeroPropsSchema = z.object({
   overlayColor: ColorValueSchema.optional(),
   overlayOpacity: z.number().min(0).max(1).optional(),
   height: z.number().min(200).max(1200).default(520),
-  align: z.enum(['left', 'center', 'right']).default('center'),
+  align: TextAlignSchema.default('center'),
   titleColor: ColorValueSchema.default('#ffffff'),
   subtitleColor: ColorValueSchema.default('#f5f5f5'),
   titleFontSize: z.number().min(16).max(200).default(56),

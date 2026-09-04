@@ -790,6 +790,44 @@ describe('designDocStore — streaming-transactie (live-preview)', () => {
     expect(useDesignDocStore.getState().doc).toBe(before);
   });
 
+  it('regression: cta insert met align=start (AI-flexbox-verwarring) wordt geaccepteerd', async () => {
+    // Concrete scenario dat user in productie tegenkwam op 2026-09-04:
+    // AI generated insert_node cta met align='start' (uit gewoonte van layout-column).
+    // Vóór lenient TextAlignSchema: patch afgewezen, hele stream faalde in atomic-batch.
+    // Nu: schema accepteert 'start' (via preprocess-naar-'left' bij Zod-parse); patch
+    // gaat door, cta verschijnt in de doc.
+    //
+    // Let op: de opgeslagen prop-waarde blijft 'start' — validateAndBuildCandidate
+    // gebruikt schema.safeParse alleen voor validatie, niet om de op te herschrijven.
+    // De renderer moet 'start'/'end' als CSS `text-align: start|end` afhandelen
+    // (functioneel identiek in LTR-contexts). Storage-normalisatie is een aparte
+    // follow-up als we canonical values in de doc-JSON willen forceren.
+    attachPersistence(noopPersistence());
+    attachNodeRegistry(createDefaultRegistry());
+    useDesignDocStore.getState().reset(seedLandingPage());
+
+    useDesignDocStore.getState().beginStream();
+    const res = useDesignDocStore.getState().applyStreamOp({
+      kind: 'insertNode',
+      parentId: 'root',
+      index: 0,
+      node: {
+        id: 'ai-cta',
+        type: 'cta',
+        props: { text: 'Meer info', href: '#info', align: 'start' as unknown as 'left' },
+      },
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.changed).toBe(true);
+    useDesignDocStore.getState().commitStream();
+
+    const rootChildren = useDesignDocStore.getState().doc.pages[0]!.root.children ?? [];
+    const cta = rootChildren.find((c) => c.id === 'ai-cta');
+    expect(cta).toBeDefined();
+    expect(cta!.type).toBe('cta');
+  });
+
   it('reset() mid-stream gooit baseline weg (cross-doc safety)', async () => {
     attachPersistence(noopPersistence());
     attachNodeRegistry(createDefaultRegistry());

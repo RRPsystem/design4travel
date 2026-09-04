@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { NodeDefinition } from '../types.js';
+import { TextAlignSchema } from '../style/align.js';
 
 export const CtaPropsSchema = z.object({
   text: z.string().default('Bekijk reizen'),
@@ -8,7 +9,7 @@ export const CtaPropsSchema = z.object({
   color: z.string().optional(),
   textColor: z.string().optional(),
   size: z.enum(['sm', 'md', 'lg']).default('md'),
-  align: z.enum(['left', 'center', 'right']).default('left'),
+  align: TextAlignSchema.default('left'),
 });
 export type CtaProps = z.infer<typeof CtaPropsSchema>;
 
