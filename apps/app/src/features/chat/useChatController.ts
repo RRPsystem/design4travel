@@ -34,6 +34,11 @@ export function useChatController() {
       // dat er nog niet is, toont de UI een neutrale "denkt na..." zonder
       // model-label. Zodra Anthropic's stream begint volgt de echte model-naam.
       useChatStore.getState().startLive('');
+      // Streaming-transactie starten. Elke tool_complete met een patch
+      // wordt tijdens de stream toegepast via applyStreamOp (live-preview);
+      // op success committen we één undo-eenheid, op failure rollback.
+      useDesignDocStore.getState().beginStream();
+      let anyLiveApplyHappened = false;
       try {
         const { doc, selectedNodeId } = useDesignDocStore.getState();
         const response = await getAI().generatePatch(
@@ -41,31 +46,67 @@ export function useChatController() {
           trimmed,
           (evt) => {
             useChatStore.getState().liveEvent(evt);
+            // Live-apply per tool_complete. Fail-safe:
+            // - Server pre-PR-1 (patch undefined) → skip, batch-apply na stream.
+            // - Server delegate_to_opus / unknown / invalid input (patch=null) → skip.
+            // - Individuele apply-failure → log, ga door met stream. Bolt/V0-stijl.
+            if (evt.kind === 'tool_complete' && evt.patch) {
+              const streamResult = useDesignDocStore.getState().applyStreamOp(evt.patch);
+              if (streamResult.ok && streamResult.changed) {
+                anyLiveApplyHappened = true;
+              } else if (!streamResult.ok) {
+                console.warn(
+                  '[live-preview] applyStreamOp failed:',
+                  streamResult.message,
+                  'op:',
+                  evt.patch,
+                );
+              }
+            }
           },
         );
-        // Succesmelding hangt aan het WERKELIJKE resultaat van applyOps,
-        // niet aan `response.assistantMessage` — dat is de tekst die het
-        // model wilde tonen maar dat zegt niks over of de patch daadwerkelijk
-        // iets veranderde of überhaupt geldig was.
-        const result =
-          response.patches.length > 0
-            ? useDesignDocStore.getState().applyOps(response.patches)
-            : ({ ok: true, changed: false, reason: 'no-op' } as const);
 
-        if (result.ok && result.changed) {
+        // Commit-fase. Twee paden:
+        // 1. Live-apply gebeurde → commitStream pusht 1 undo-eenheid + 1 save.
+        // 2. Geen live-applies (server-pre-PR-1) → fallback op klassieke
+        //    applyOps met response.patches. Backward-compat pad.
+        let changed = false;
+        let failureMessage: string | null = null;
+        if (anyLiveApplyHappened) {
+          const commit = useDesignDocStore.getState().commitStream();
+          changed = commit.changed;
+        } else {
+          // Geen live-apply gebeurd. Rollback (no-op, doc is baseline) en val
+          // terug op batch-apply zodat oude Edge Function-versies blijven werken.
+          useDesignDocStore.getState().rollbackStream();
+          if (response.patches.length > 0) {
+            const result = useDesignDocStore.getState().applyOps(response.patches);
+            if (result.ok) {
+              changed = result.changed;
+            } else {
+              failureMessage = result.message;
+            }
+          }
+        }
+
+        if (failureMessage !== null) {
+          append({
+            role: 'assistant',
+            text: `Ik kon de wijziging niet uitvoeren: ${failureMessage}`,
+          });
+        } else if (changed) {
           append({ role: 'assistant', text: response.assistantMessage });
-        } else if (result.ok && !result.changed) {
+        } else {
           append({
             role: 'assistant',
             text: 'Dit stond al zo ingesteld, daarom heb ik niets aangepast.',
           });
-        } else {
-          append({
-            role: 'assistant',
-            text: `Ik kon de wijziging niet uitvoeren: ${result.message}`,
-          });
         }
       } catch (e) {
+        // Stream errored mid-way. Rollback zodat doc terug op baseline is
+        // (safe default; keep-partial vraagt om "resume"-UI die we nog niet
+        // hebben — komt in v0.3-slice-3 iteratie-knoppen).
+        useDesignDocStore.getState().rollbackStream();
         append({ role: 'assistant', text: `Er ging iets mis: ${String(e)}` });
       } finally {
         useChatStore.getState().endLive();

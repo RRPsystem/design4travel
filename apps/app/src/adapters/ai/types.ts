@@ -38,8 +38,17 @@ export type AIStreamEvent =
   | { kind: 'text_delta'; text: string }
   /** Nieuwe tool_use-call gestart bij Anthropic. Naam bekend, args nog niet volledig. */
   | { kind: 'tool_start'; index: number; tool: string }
-  /** Tool_use volledig binnen. summary = korte NL-omschrijving. */
-  | { kind: 'tool_complete'; index: number; tool: string; summary: string }
+  /**
+   * Tool_use volledig binnen. summary = korte NL-omschrijving.
+   *
+   * `patch` bevat de gedecodeerde PatchOp als de tool_use direct naar een
+   * doc-mutatie mapt (set_prop, insert_node, add_page, etc.). Voor
+   * delegate_to_opus en onbekende/ongeldige tool-calls is `patch = null`.
+   * Optioneel voor backward-compat: oude Edge Function-versies (pre-PR-1
+   * van live-preview) sturen 'm niet mee → client valt terug op batch-
+   * apply via `response.patches` uit het done-event.
+   */
+  | { kind: 'tool_complete'; index: number; tool: string; summary: string; patch?: PatchOp | null }
   /** Router delegate'de naar specialist. UI toont visuele transitie. */
   | { kind: 'delegate'; from: string; to: string; rationale: string };
 
